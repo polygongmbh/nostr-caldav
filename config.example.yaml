@@ -1,0 +1,21 @@
+nostr:
+  relays:
+    - "wss://relay.damus.io"
+    - "wss://nos.lol"
+  follow_pubkeys:
+    - "npub1replace_me"
+  private_key: null
+
+caldav:
+  host: "0.0.0.0"
+  port: 5232
+  base_url: "http://localhost:5232"
+  username: "user"
+  password: "password"
+
+sync:
+  poll_interval_seconds: 30
+  lookback_days: 90
+
+db:
+  path: "./bridge.db"
