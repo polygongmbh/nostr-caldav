@@ -29,7 +29,8 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
     nostr: {
       relays: parsed?.nostr?.relays || [],
       followPubkeys: (parsed?.nostr?.follow_pubkeys || []).map(toHexPubkey),
-      privateKey: parsed?.nostr?.private_key || null
+      privateKey: parsed?.nostr?.private_key || null,
+      bunkerUrl: parsed?.nostr?.bunker_url || null
     },
     caldav: {
       host: parsed?.caldav?.host || "0.0.0.0",
