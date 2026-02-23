@@ -1,6 +1,7 @@
 import express from "express";
 import morgan from "morgan";
-import { issueToVtodo } from "./ical.js";
+import { issueToVtodo } from "./ics.js";
+import { processVtodoPut, selectIssuesForSync } from "./caldav-core.js";
 
 function basicAuth(expectedUser, expectedPass) {
   return (req, res, next) => {
@@ -29,6 +30,15 @@ function objectPath(user, uid) {
   return `/calendars/${user}/nostr-issues/${uid}.ics`;
 }
 
+function extractSyncToken(reportBody) {
+  const match = String(reportBody || "").match(/<[^>]*sync-token[^>]*>([^<]+)<\/[^>]*sync-token>/i);
+  if (!match) return null;
+  const value = match[1].trim();
+  const parts = value.split(":");
+  const token = Number(parts[parts.length - 1]);
+  return Number.isFinite(token) ? token : null;
+}
+
 function multistatusForCollection(baseUrl, user, token, issues) {
   const responses = issues
     .map((issue) => {
@@ -54,7 +64,7 @@ ${responses}
 </d:multistatus>`;
 }
 
-export function createCaldavServer({ db, caldavConfig }) {
+export function createCaldavServer({ db, caldavConfig, syncService }) {
   const app = express();
   const user = caldavConfig.username;
 
@@ -75,7 +85,12 @@ export function createCaldavServer({ db, caldavConfig }) {
     if (req.method !== "PROPFIND" && req.method !== "REPORT") return next();
 
     const syncToken = db.getSyncToken();
-    const issues = db.listIssues();
+    const requestedSyncToken = req.method === "REPORT" ? extractSyncToken(req.body) : null;
+    const issues = selectIssuesForSync({
+      currentToken: syncToken,
+      requestedToken: requestedSyncToken,
+      issues: db.listIssues()
+    });
 
     if (req.path === `/${".well-known"}/caldav`) {
       return xmlResponse(
@@ -112,12 +127,28 @@ export function createCaldavServer({ db, caldavConfig }) {
     return res.status(200).send(issueToVtodo(issue));
   });
 
-  app.put(`/calendars/${user}/nostr-issues/:uid.ics`, (_req, res) => {
-    return res.status(405).send("Read-only in phase 1");
+  app.put(`/calendars/${user}/nostr-issues/:uid.ics`, async (req, res) => {
+    const result = await processVtodoPut({
+      db,
+      syncService,
+      uid: req.params.uid,
+      ifMatch: req.header("if-match"),
+      body: req.body
+    });
+
+    if (result.etag) {
+      res.set("ETag", result.etag);
+    }
+
+    if (result.status === 204) {
+      return res.status(204).end();
+    }
+
+    return res.status(result.status).send(result.error);
   });
 
   app.delete(`/calendars/${user}/nostr-issues/:uid.ics`, (_req, res) => {
-    return res.status(405).send("Read-only in phase 1");
+    return res.status(405).send("Deleting tasks is not supported");
   });
 
   app.all("*", (_req, res) => res.status(404).send("Not found"));
