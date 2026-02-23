@@ -4,7 +4,11 @@ nostr:
     - "wss://nos.lol"
   follow_pubkeys:
     - "npub1replace_me"
+  # Optional. Needed for CalDAV -> Nostr writeback.
+  # Supports nsec1... or 64-char hex.
   private_key: null
+  # Optional future support.
+  bunker_url: null
 
 caldav:
   host: "0.0.0.0"
