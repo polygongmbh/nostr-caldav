@@ -43,7 +43,8 @@ async function main() {
   const app = createCaldavServer({
     db,
     caldavConfig: config.caldav,
-    syncService
+    syncService,
+    trackedPubkeys: config.nostr.followPubkeys
   });
 
   const server = app.listen(config.caldav.port, config.caldav.host, () => {

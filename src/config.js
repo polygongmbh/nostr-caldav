@@ -17,6 +17,34 @@ function toHexPubkey(pubkey) {
   return pubkey;
 }
 
+function normalizePrincipals(parsedCaldav, defaultUser, defaultPass) {
+  const principals = parsedCaldav?.principals;
+  if (!Array.isArray(principals) || principals.length === 0) {
+    return [
+      {
+        username: defaultUser,
+        password: defaultPass,
+        pubkeys: [],
+        calendars: []
+      }
+    ];
+  }
+
+  return principals.map((p) => ({
+    username: p?.username || defaultUser,
+    password: p?.password || defaultPass,
+    pubkeys: (p?.pubkeys || []).map(toHexPubkey),
+    calendars: (p?.calendars || []).map((c) => ({
+      id: c?.id || null,
+      name: c?.name || c?.id || "filtered",
+      pubkeys: (c?.pubkeys || []).map(toHexPubkey),
+      labels: c?.labels || [],
+      statuses: c?.statuses || [],
+      text: c?.text || null
+    }))
+  }));
+}
+
 export function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
   if (!fs.existsSync(configPath)) {
     throw new Error(`Config file not found: ${configPath}`);
@@ -37,7 +65,12 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
       port: parsed?.caldav?.port || 5232,
       baseUrl: parsed?.caldav?.base_url || "http://localhost:5232",
       username: parsed?.caldav?.username || "user",
-      password: parsed?.caldav?.password || "password"
+      password: parsed?.caldav?.password || "password",
+      principals: normalizePrincipals(
+        parsed?.caldav,
+        parsed?.caldav?.username || "user",
+        parsed?.caldav?.password || "password"
+      )
     },
     sync: {
       pollIntervalSeconds: parsed?.sync?.poll_interval_seconds || 30,
