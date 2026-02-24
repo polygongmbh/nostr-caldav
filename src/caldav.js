@@ -1,7 +1,7 @@
 import express from "express";
 import morgan from "morgan";
 import { issueToVtodo } from "./ics.js";
-import { processVtodoPut, selectIssuesForSync } from "./caldav-core.js";
+import { processVtodoPut, runReportQuery } from "./caldav-core.js";
 
 function basicAuth(expectedUser, expectedPass) {
   return (req, res, next) => {
@@ -26,22 +26,22 @@ function xmlResponse(res, code, body) {
   res.send(body);
 }
 
+function xmlEscape(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function objectPath(user, uid) {
   return `/calendars/${user}/nostr-issues/${uid}.ics`;
 }
 
-function extractSyncToken(reportBody) {
-  const match = String(reportBody || "").match(/<[^>]*sync-token[^>]*>([^<]+)<\/[^>]*sync-token>/i);
-  if (!match) return null;
-  const value = match[1].trim();
-  const parts = value.split(":");
-  const token = Number(parts[parts.length - 1]);
-  return Number.isFinite(token) ? token : null;
-}
-
-function multistatusForCollection(baseUrl, user, token, issues) {
-  const responses = issues
-    .map((issue) => {
+function multistatusForCollection(baseUrl, user, token, rows) {
+  const responses = rows
+    .map((row) => {
+      const issue = row.issue || row;
+      const includeCalendarData = row.projection?.includeCalendarData !== false;
       const href = `${baseUrl}${objectPath(user, issue.caldav_uid)}`;
       return `
   <d:response>
@@ -49,7 +49,7 @@ function multistatusForCollection(baseUrl, user, token, issues) {
     <d:propstat>
       <d:prop>
         <d:getetag>${issue.caldav_etag}</d:getetag>
-        <c:calendar-data/>
+        ${includeCalendarData ? `<c:calendar-data>${xmlEscape(issueToVtodo(issue))}</c:calendar-data>` : ""}
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
@@ -85,12 +85,10 @@ export function createCaldavServer({ db, caldavConfig, syncService }) {
     if (req.method !== "PROPFIND" && req.method !== "REPORT") return next();
 
     const syncToken = db.getSyncToken();
-    const requestedSyncToken = req.method === "REPORT" ? extractSyncToken(req.body) : null;
-    const issues = selectIssuesForSync({
-      currentToken: syncToken,
-      requestedToken: requestedSyncToken,
-      issues: db.listIssues()
-    });
+    const allIssues = db.listIssues();
+    const report = req.method === "REPORT" ? runReportQuery({ issues: allIssues, reportBody: req.body, syncToken }) : null;
+    const issues = report?.issues || allIssues;
+    const reportRows = report?.results || issues;
 
     if (req.path === `/${".well-known"}/caldav`) {
       return xmlResponse(
@@ -112,7 +110,7 @@ export function createCaldavServer({ db, caldavConfig, syncService }) {
     }
 
     if (req.path === `/calendars/${user}/` || req.path === `/calendars/${user}/nostr-issues/`) {
-      return xmlResponse(res, 207, multistatusForCollection(caldavConfig.baseUrl, user, syncToken, issues));
+      return xmlResponse(res, 207, multistatusForCollection(caldavConfig.baseUrl, user, syncToken, reportRows));
     }
 
     return res.status(404).send("Not found");

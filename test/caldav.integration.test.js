@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { openDb } from "../src/db.js";
 import { issueToVtodo } from "../src/ics.js";
-import { processVtodoPut, selectIssuesForSync } from "../src/caldav-core.js";
+import { processVtodoPut, runReportQuery, selectIssuesForSync } from "../src/caldav-core.js";
 
 function mkDbPath() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nostr-caldav-it-"));
@@ -121,6 +121,47 @@ test("Sync token selection and ICS rendering integration", () => {
   const ics = issueToVtodo(issue);
   assert.match(ics, /STATUS:NEEDS-ACTION/);
   assert.match(ics, /SUMMARY:Initial issue/);
+
+  db.close();
+});
+
+test("calendar-query filters by SUMMARY text-match", () => {
+  const db = openDb(mkDbPath());
+  seedIssue(db);
+
+  db.upsertIssueFromNostr(
+    {
+      id: "c".repeat(64),
+      pubkey: "d".repeat(64),
+      created_at: 1710000300,
+      kind: 1621,
+      content: "Another body",
+      tags: [["subject", "Different task"], ["label", "chore"]]
+    },
+    "wss://relay.example"
+  );
+
+  const report = runReportQuery({
+    issues: db.listIssues(),
+    syncToken: db.getSyncToken(),
+    reportBody: `<?xml version="1.0" encoding="UTF-8"?>
+<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop><d:getetag/><c:calendar-data/></d:prop>
+  <c:filter>
+    <c:comp-filter name="VCALENDAR">
+      <c:comp-filter name="VTODO">
+        <c:prop-filter name="SUMMARY">
+          <c:text-match match-type="contains">Initial</c:text-match>
+        </c:prop-filter>
+      </c:comp-filter>
+    </c:comp-filter>
+  </c:filter>
+</c:calendar-query>`
+  });
+
+  assert.equal(report.type, "calendar-query");
+  assert.equal(report.results.length, 1);
+  assert.equal(report.results[0].issue.subject, "Initial issue");
 
   db.close();
 });

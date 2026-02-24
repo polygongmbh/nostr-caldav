@@ -269,11 +269,54 @@ export function openDb(filePath) {
     };
   }
 
+  function listIssuesFiltered({ pubkeys, labels, statuses, text } = {}) {
+    let query = "SELECT * FROM issues";
+    const where = [];
+    const params = {};
+
+    if (Array.isArray(pubkeys) && pubkeys.length > 0) {
+      const names = pubkeys.map((_, idx) => `pubkey_${idx}`);
+      where.push(`pubkey IN (${names.map((n) => `@${n}`).join(",")})`);
+      names.forEach((name, idx) => {
+        params[name] = pubkeys[idx];
+      });
+    }
+
+    if (Array.isArray(statuses) && statuses.length > 0) {
+      const names = statuses.map((_, idx) => `status_${idx}`);
+      where.push(`status IN (${names.map((n) => `@${n}`).join(",")})`);
+      names.forEach((name, idx) => {
+        params[name] = statuses[idx];
+      });
+    }
+
+    if (Array.isArray(labels) && labels.length > 0) {
+      const clauses = labels.map((_, idx) => `labels LIKE @label_${idx}`);
+      where.push(`(${clauses.join(" OR ")})`);
+      labels.forEach((label, idx) => {
+        params[`label_${idx}`] = `%\"${label}\"%`;
+      });
+    }
+
+    if (text) {
+      where.push("(subject LIKE @text OR body LIKE @text)");
+      params.text = `%${text}%`;
+    }
+
+    if (where.length > 0) {
+      query += ` WHERE ${where.join(" AND ")}`;
+    }
+
+    query += " ORDER BY created_at DESC";
+    return db.prepare(query).all(params);
+  }
+
   return {
     raw: db,
     getIssueByUid: (uid) => getIssueByUidStmt.get(uid),
     getIssueByEventId: (eventId) => getIssueByEventIdStmt.get(eventId),
     listIssues: () => listIssuesStmt.all(),
+    listIssuesFiltered,
     getSyncToken,
     upsertIssueFromNostr,
     applyStatusEventFromNostr,

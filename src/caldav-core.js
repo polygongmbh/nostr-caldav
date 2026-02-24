@@ -1,10 +1,44 @@
 import { parseVtodo } from "./ics.js";
+import {
+  detectReportType,
+  extractRequestedProps,
+  extractSyncToken,
+  filterIssuesByCalendarQuery,
+  projectCalendarData
+} from "./caldav-query.js";
 
 export function selectIssuesForSync({ currentToken, requestedToken, issues }) {
   if (requestedToken && requestedToken >= currentToken) {
     return [];
   }
   return issues;
+}
+
+export function runReportQuery({ issues, reportBody, syncToken }) {
+  const type = detectReportType(reportBody);
+
+  if (type === "sync-collection") {
+    const requestedToken = extractSyncToken(reportBody);
+    return {
+      type,
+      issues: selectIssuesForSync({ currentToken: syncToken, requestedToken, issues })
+    };
+  }
+
+  if (type === "calendar-query") {
+    const filtered = filterIssuesByCalendarQuery(issues, reportBody);
+    const requestedProps = extractRequestedProps(reportBody);
+    const projected = filtered.map((issue) => ({
+      issue,
+      projection: projectCalendarData(issue, requestedProps)
+    }));
+    return { type, results: projected };
+  }
+
+  return {
+    type,
+    issues
+  };
 }
 
 export async function processVtodoPut({ db, syncService, uid, ifMatch, body }) {
