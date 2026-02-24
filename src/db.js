@@ -128,6 +128,15 @@ export function openDb(filePath) {
     return getOrInitSyncToken();
   }
 
+  function getConfigValue(key) {
+    const row = getConfigStmt.get(key);
+    return row ? row.value : null;
+  }
+
+  function setConfigValue(key, value) {
+    setConfigStmt.run(key, String(value));
+  }
+
   function logSync({ direction, eventId, action, error = null }) {
     db.prepare(
       "INSERT INTO sync_log (direction, event_id, action, timestamp, error) VALUES (?, ?, ?, ?, ?)"
@@ -317,6 +326,8 @@ export function openDb(filePath) {
     getIssueByEventId: (eventId) => getIssueByEventIdStmt.get(eventId),
     listIssues: () => listIssuesStmt.all(),
     listIssuesFiltered,
+    getConfigValue,
+    setConfigValue,
     getSyncToken,
     upsertIssueFromNostr,
     applyStatusEventFromNostr,

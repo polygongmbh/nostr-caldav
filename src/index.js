@@ -3,6 +3,7 @@ import { openDb } from "./db.js";
 import { NostrSubscriber, createNostrPublisher } from "./nostr.js";
 import { createCaldavServer } from "./caldav.js";
 import { createSyncService } from "./sync.js";
+import { createBridgeSigner, createNip42AuthSigner } from "./signer.js";
 
 function unixNow() {
   return Math.floor(Date.now() / 1000);
@@ -11,13 +12,18 @@ function unixNow() {
 async function main() {
   const config = loadConfig();
   const db = openDb(config.db.path);
-  if (config.nostr.bunkerUrl) {
-    console.warn("NIP-46 bunker_url is configured but not implemented yet; using local private key mode.");
-  }
+  const signer = await createBridgeSigner({
+    privateKey: config.nostr.privateKey,
+    bunkerUrl: config.nostr.bunkerUrl,
+    relays: config.nostr.relays,
+    db
+  });
+  const authSigner = createNip42AuthSigner(signer);
 
   const publisher = createNostrPublisher({
     relays: config.nostr.relays,
-    privateKey: config.nostr.privateKey
+    signer,
+    onauth: authSigner
   });
 
   const syncService = createSyncService({ db, publisher });
@@ -35,7 +41,8 @@ async function main() {
     },
     onComment: (event) => {
       syncService.onCommentEvent(event);
-    }
+    },
+    onauth: authSigner
   });
 
   subscriber.start();
@@ -50,11 +57,13 @@ async function main() {
   const server = app.listen(config.caldav.port, config.caldav.host, () => {
     console.log(`CalDAV server listening on ${config.caldav.host}:${config.caldav.port}`);
     console.log(`Nostr writeback enabled: ${publisher.enabled ? "yes" : "no"}`);
+    console.log(`Signer mode: ${signer.mode}`);
   });
 
   const shutdown = () => {
     subscriber.stop();
     syncService.close();
+    signer.close();
     server.close(() => {
       db.close();
       process.exit(0);

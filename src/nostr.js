@@ -1,30 +1,12 @@
-import { SimplePool, finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
+import { SimplePool } from "nostr-tools";
 import { COMMENT_KIND, internalStatusToKind, ISSUE_KIND } from "./status.js";
-
-function decodePrivateKey(privateKey) {
-  if (!privateKey) return null;
-
-  if (privateKey.startsWith("nsec1")) {
-    const decoded = nip19.decode(privateKey);
-    if (decoded.type !== "nsec") {
-      throw new Error(`Expected nsec private key, got ${decoded.type}`);
-    }
-    return decoded.data;
-  }
-
-  if (/^[0-9a-fA-F]{64}$/.test(privateKey)) {
-    return Uint8Array.from(Buffer.from(privateKey, "hex"));
-  }
-
-  throw new Error("Unsupported private key format. Use nsec1... or 64-byte hex.");
-}
 
 function getEventRefId(tags) {
   return (tags || []).find((t) => t[0] === "e")?.[1] || null;
 }
 
 export class NostrSubscriber {
-  constructor({ relays, authors, since, onIssue, onStatus, onComment }) {
+  constructor({ relays, authors, since, onIssue, onStatus, onComment, onauth }) {
     this.pool = new SimplePool();
     this.relays = relays;
     this.authors = authors;
@@ -32,6 +14,7 @@ export class NostrSubscriber {
     this.onIssue = onIssue;
     this.onStatus = onStatus;
     this.onComment = onComment;
+    this.onauth = onauth;
     this.seen = new Set();
   }
 
@@ -58,6 +41,7 @@ export class NostrSubscriber {
     ];
 
     const sub = this.pool.subscribeMany(this.relays, filters, {
+      onauth: this.onauth || undefined,
       onevent: (event) => {
         if (this.seen.has(event.id)) return;
         this.seen.add(event.id);
@@ -96,20 +80,20 @@ export class NostrSubscriber {
   }
 }
 
-export function createNostrPublisher({ relays, privateKey }) {
-  const privateKeyBytes = decodePrivateKey(privateKey);
+export function createNostrPublisher({ relays, signer, onauth }) {
+  const pool = new SimplePool();
 
-  if (!privateKeyBytes) {
+  if (!signer?.enabled) {
     return {
       enabled: false,
       async publishStatusChange() {
-        return { skipped: true, reason: "missing_private_key" };
+        return { skipped: true, reason: "missing_signer" };
+      },
+      close() {
+        pool.close(relays);
       }
     };
   }
-
-  const pool = new SimplePool();
-  const pubkey = getPublicKey(privateKeyBytes);
 
   return {
     enabled: true,
@@ -119,19 +103,14 @@ export function createNostrPublisher({ relays, privateKey }) {
         throw new Error(`Unsupported status for Nostr publish: ${status}`);
       }
 
-      const eventTemplate = {
+      const signed = await signer.signEvent({
         kind,
         created_at: Math.floor(Date.now() / 1000),
         tags: [["e", issueEventId]],
         content: ""
-      };
+      });
 
-      const signed = finalizeEvent(eventTemplate, privateKeyBytes);
-      if (signed.pubkey !== pubkey) {
-        throw new Error("Signed event pubkey mismatch");
-      }
-
-      await Promise.any(pool.publish(relays, signed));
+      await Promise.any(pool.publish(relays, signed, { onauth: onauth || undefined }));
       return { skipped: false, event: signed };
     },
     close() {
