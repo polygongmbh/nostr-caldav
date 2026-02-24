@@ -1,0 +1,11 @@
+services:
+  nostr-caldav:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5232:5232"
+    volumes:
+      - ./config.yaml:/data/config.yaml:ro
+      - ./data:/data
+    restart: unless-stopped

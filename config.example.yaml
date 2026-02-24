@@ -4,18 +4,36 @@ nostr:
     - "wss://nos.lol"
   follow_pubkeys:
     - "npub1replace_me"
-  # Optional. Needed for CalDAV -> Nostr writeback.
+
+  # Option A: local signer key (CalDAV -> Nostr writeback)
   # Supports nsec1... or 64-char hex.
   private_key: null
-  # Optional future support.
+
+  # Option B: NIP-46 bunker signer URL / identifier.
+  # When set, bunker mode is preferred over private_key.
   bunker_url: null
 
 caldav:
   host: "0.0.0.0"
   port: 5232
   base_url: "http://localhost:5232"
+
+  # Backward-compatible single principal
   username: "user"
   password: "password"
+
+  # Optional explicit multi-principal configuration
+  principals:
+    - username: "user"
+      password: "password"
+      # Restrict this principal to these issue authors (hex or npub)
+      pubkeys: []
+      # Extra filtered calendars for this principal
+      calendars:
+        - id: "bugs"
+          name: "Bug Issues"
+          labels: ["bug"]
+          statuses: ["open"]
 
 sync:
   poll_interval_seconds: 30

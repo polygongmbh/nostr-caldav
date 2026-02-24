@@ -1,0 +1,8 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+bridge.db
+*.db
+*.sqlite
+test
