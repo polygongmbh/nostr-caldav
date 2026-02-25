@@ -36,6 +36,27 @@ npm start
 
 Server defaults to `http://localhost:5232`.
 
+## Apple Reminders Setup (HTTPS via Caddy)
+
+Apple account verification is most reliable over HTTPS on port `443`.
+
+1. Point a DNS hostname (example: `caldav.example.com`) to your server IP.
+2. Update `config.yaml`:
+   - `caldav.host: "::"`
+   - `caldav.base_url: "https://caldav.example.com"`
+3. Edit `Caddyfile` and replace `caldav.example.com` with your real hostname.
+4. Run bridge and Caddy:
+
+```bash
+npm start
+caddy run --config ./Caddyfile
+```
+
+5. In Apple Reminders CalDAV account:
+   - Server: `caldav.example.com`
+   - Username/password: values from `config.yaml`
+   - SSL: on (default)
+
 ## Test
 
 ```bash

@@ -14,9 +14,10 @@ nostr:
   bunker_url: null
 
 caldav:
-  host: "0.0.0.0"
+  host: "::"
   port: 5232
-  base_url: "http://localhost:5232"
+  # Use your public HTTPS hostname when exposing via Caddy.
+  base_url: "https://caldav.example.com"
 
   # Backward-compatible single principal
   username: "user"
