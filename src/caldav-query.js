@@ -200,10 +200,10 @@ export function extractRequestedProps(reportBody) {
   const blocks = allTagContents(reportBody, "prop");
 
   for (const block of blocks) {
-    const re = /<[^>]*([a-z-]+)\s*\/?>/gi;
+    const re = /<\s*([a-z0-9_-]+:)?([a-z-]+)\s*\/?>/gi;
     let m;
     while ((m = re.exec(block)) !== null) {
-      const name = m[1];
+      const name = m[2];
       if (name) props.push(name.toLowerCase());
     }
   }
@@ -216,6 +216,7 @@ export function projectCalendarData(issue, requestedProps) {
     return { includeCalendarData: true };
   }
 
+  // Some clients namespace calendar-data (e.g. c:calendar-data). We normalize local names.
   const includeCalendarData = requestedProps.includes("calendar-data");
   return { includeCalendarData };
 }

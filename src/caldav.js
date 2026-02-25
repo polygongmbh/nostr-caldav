@@ -47,6 +47,11 @@ function xmlResponse(res, code, body) {
   res.send(body);
 }
 
+function normalizeCollectionPath(path) {
+  if (path.length > 1 && path.endsWith("/")) return path.slice(0, -1);
+  return path;
+}
+
 function xmlEscape(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -62,12 +67,13 @@ function calendarPath(user, calendarId) {
   return `/calendars/${user}/${calendarId}/`;
 }
 
-function multistatusForCollection(baseUrl, user, calendarId, token, rows) {
+function multistatusForCollection(_baseUrl, user, calendarId, token, rows) {
+  const calendarHref = `${calendarPath(user, calendarId)}`;
   const responses = rows
     .map((row) => {
       const issue = row.issue || row;
       const includeCalendarData = row.projection?.includeCalendarData !== false;
-      const href = `${baseUrl}${objectPath(user, calendarId, issue.caldav_uid)}`;
+      const href = `${objectPath(user, calendarId, issue.caldav_uid)}`;
       return `
   <d:response>
     <d:href>${href}</d:href>
@@ -83,21 +89,42 @@ function multistatusForCollection(baseUrl, user, calendarId, token, rows) {
     .join("\n");
 
   return `<?xml version="1.0" encoding="utf-8" ?>
-<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/">
   <d:sync-token>urn:sync-token:${token}</d:sync-token>
+  <d:response>
+    <d:href>${calendarHref}</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/><c:calendar/></d:resourcetype>
+        <d:supported-report-set>
+          <d:supported-report><d:report><c:calendar-query/></d:report></d:supported-report>
+          <d:supported-report><d:report><d:sync-collection/></d:report></d:supported-report>
+        </d:supported-report-set>
+        <c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set>
+        <cs:getctag>${token}</cs:getctag>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
 ${responses}
 </d:multistatus>`;
 }
 
-function multistatusForPrincipal(baseUrl, principal, calendars) {
+function multistatusForPrincipal(_baseUrl, principal, calendars) {
+  const homeHref = `/calendars/${principal.username}/`;
   const responses = calendars
     .map((cal) => `
   <d:response>
-    <d:href>${baseUrl}${calendarPath(principal.username, cal.id)}</d:href>
+    <d:href>${calendarPath(principal.username, cal.id)}</d:href>
     <d:propstat>
       <d:prop>
         <d:displayname>${xmlEscape(cal.name)}</d:displayname>
         <d:resourcetype><d:collection/><c:calendar/></d:resourcetype>
+        <d:supported-report-set>
+          <d:supported-report><d:report><c:calendar-query/></d:report></d:supported-report>
+          <d:supported-report><d:report><d:sync-collection/></d:report></d:supported-report>
+        </d:supported-report-set>
+        <c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set>
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
@@ -105,8 +132,56 @@ function multistatusForPrincipal(baseUrl, principal, calendars) {
     .join("\n");
 
   return `<?xml version="1.0" encoding="utf-8" ?>
-<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/">
+  <d:response>
+    <d:href>${homeHref}</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:displayname>${xmlEscape(principal.username)}</d:displayname>
+        <d:resourcetype><d:collection/></d:resourcetype>
+        <cs:getctag>${Date.now()}</cs:getctag>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
 ${responses}
+</d:multistatus>`;
+}
+
+function multistatusForServiceRoot(_baseUrl, principal) {
+  const principalHref = `/principals/${principal.username}/`;
+  return `<?xml version="1.0" encoding="utf-8" ?>
+<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/></d:resourcetype>
+        <d:current-user-principal><d:href>${principalHref}</d:href></d:current-user-principal>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>`;
+}
+
+function multistatusForPrincipalRef(_baseUrl, principal, hrefPath) {
+  const principalHref = `/principals/${principal.username}/`;
+  const calendarHome = `/calendars/${principal.username}/`;
+  return `<?xml version="1.0" encoding="utf-8" ?>
+<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>${hrefPath}</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/><d:principal/></d:resourcetype>
+        <d:displayname>${xmlEscape(principal.username)}</d:displayname>
+        <c:calendar-home-set><d:href>${calendarHome}</d:href></c:calendar-home-set>
+        <d:current-user-principal><d:href>${principalHref}</d:href></d:current-user-principal>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
 </d:multistatus>`;
 }
 
@@ -125,6 +200,12 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
   app.use(express.text({ type: "*/*", limit: "2mb" }));
   app.use(principalAuth(principals));
 
+  app.options("*", (_req, res) => {
+    res.set("Allow", "OPTIONS, PROPFIND, REPORT, GET, PUT, DELETE");
+    res.set("DAV", "1, calendar-access");
+    return res.status(200).end();
+  });
+
   app.use((req, res, next) => {
     res.set("DAV", "1, calendar-access");
     next();
@@ -140,12 +221,41 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     const principal = req.principal;
     const syncToken = db.getSyncToken();
     const calendars = buildPrincipalCalendars(principal, trackedPubkeys);
+    const normalizedPath = normalizeCollectionPath(req.path);
 
-    if (req.path === `/calendars/${principal.username}/`) {
+    if (normalizedPath === "/") {
+      return xmlResponse(res, 207, multistatusForServiceRoot(caldavConfig.baseUrl, principal));
+    }
+
+    if (normalizedPath === "/.well-known/caldav") {
+      return xmlResponse(res, 207, multistatusForServiceRoot(caldavConfig.baseUrl, principal));
+    }
+
+    if (normalizedPath === "/principals" || normalizedPath === "/principals/") {
+      return xmlResponse(res, 207, multistatusForPrincipalRef(caldavConfig.baseUrl, principal, "/principals/"));
+    }
+
+    if (normalizedPath === `/principals/${principal.username}`) {
+      return xmlResponse(
+        res,
+        207,
+        multistatusForPrincipalRef(caldavConfig.baseUrl, principal, `/principals/${principal.username}/`)
+      );
+    }
+
+    if (normalizedPath.startsWith("/calendar/dav/user/")) {
+      return xmlResponse(
+        res,
+        207,
+        multistatusForPrincipalRef(caldavConfig.baseUrl, principal, `/calendar/dav/user/${principal.username}/`)
+      );
+    }
+
+    if (normalizedPath === `/calendars/${principal.username}`) {
       return xmlResponse(res, 207, multistatusForPrincipal(caldavConfig.baseUrl, principal, calendars));
     }
 
-    const collectionMatch = req.path.match(new RegExp(`^/calendars/${principal.username}/([^/]+)/$`));
+    const collectionMatch = normalizedPath.match(new RegExp(`^/calendars/${principal.username}/([^/]+)$`));
     if (!collectionMatch) {
       return res.status(404).send("Not found");
     }
@@ -158,7 +268,8 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
 
     const baseIssues = listIssuesForCalendar(db, calendar);
     const report = req.method === "REPORT" ? runReportQuery({ issues: baseIssues, reportBody: req.body, syncToken }) : null;
-    const rows = report?.results || report?.issues || baseIssues;
+    const depth = String(req.header("depth") || "1");
+    const rows = depth === "0" && req.method === "PROPFIND" ? [] : report?.results || report?.issues || baseIssues;
 
     return xmlResponse(res, 207, multistatusForCollection(caldavConfig.baseUrl, principal.username, calendarId, syncToken, rows));
   });
