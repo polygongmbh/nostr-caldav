@@ -1,4 +1,5 @@
-import { SimplePool } from "nostr-tools";
+import { SimplePool, useWebSocketImplementation } from "nostr-tools/pool";
+import WebSocket from "ws";
 import { COMMENT_KIND, internalStatusToKind, ISSUE_KIND } from "./status.js";
 
 function getEventRefId(tags) {
@@ -7,6 +8,7 @@ function getEventRefId(tags) {
 
 export class NostrSubscriber {
   constructor({ relays, authors, since, onIssue, onStatus, onComment, onauth }) {
+    useWebSocketImplementation(WebSocket);
     this.pool = new SimplePool();
     this.relays = relays;
     this.authors = authors;
@@ -28,59 +30,70 @@ export class NostrSubscriber {
       issueFilter.authors = this.authors;
     }
 
-    const filters = [
-      issueFilter,
-      {
-        kinds: [1630, 1631, 1632, 1633],
-        since: this.since
-      },
-      {
-        kinds: [COMMENT_KIND],
-        since: this.since
+    const eventHandler = (event) => {
+      if (this.seen.has(event.id)) return;
+      this.seen.add(event.id);
+
+      if (event.kind === ISSUE_KIND) {
+        this.onIssue(event);
+        return;
       }
-    ];
 
-    const sub = this.pool.subscribeMany(this.relays, filters, {
+      if (event.kind >= 1630 && event.kind <= 1633) {
+        const issueId = getEventRefId(event.tags);
+        this.onStatus(event, issueId);
+        return;
+      }
+
+      if (event.kind === COMMENT_KIND) {
+        const issueId = getEventRefId(event.tags);
+        this.onComment(event, issueId);
+      }
+    };
+
+    const commonParams = {
       onauth: this.onauth || undefined,
-      onevent: (event) => {
-        if (this.seen.has(event.id)) return;
-        this.seen.add(event.id);
-
-        if (event.kind === ISSUE_KIND) {
-          this.onIssue(event);
-          return;
-        }
-
-        if (event.kind >= 1630 && event.kind <= 1633) {
-          const issueId = getEventRefId(event.tags);
-          this.onStatus(event, issueId);
-          return;
-        }
-
-        if (event.kind === COMMENT_KIND) {
-          const issueId = getEventRefId(event.tags);
-          this.onComment(event, issueId);
-        }
-      },
+      onevent: eventHandler,
       oneose: () => {},
       onclose: (reasons) => {
         console.error("Nostr subscription closed", reasons);
       }
-    });
+    };
 
-    this.sub = sub;
-    return sub;
+    // subscribeMany accepts a single filter per subscription.
+    this.subs = [
+      this.pool.subscribeMany(this.relays, issueFilter, commonParams),
+      this.pool.subscribeMany(
+        this.relays,
+        {
+          kinds: [1630, 1631, 1632, 1633],
+          since: this.since
+        },
+        commonParams
+      ),
+      this.pool.subscribeMany(
+        this.relays,
+        {
+          kinds: [COMMENT_KIND],
+          since: this.since
+        },
+        commonParams
+      )
+    ];
+
+    return this.subs;
   }
 
   stop() {
-    if (this.sub) {
-      this.sub.close();
+    if (Array.isArray(this.subs)) {
+      this.subs.forEach((sub) => sub?.close());
     }
     this.pool.close(this.relays);
   }
 }
 
 export function createNostrPublisher({ relays, signer, onauth }) {
+  useWebSocketImplementation(WebSocket);
   const pool = new SimplePool();
 
   if (!signer?.enabled) {
