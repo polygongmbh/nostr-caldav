@@ -47,6 +47,15 @@ function xmlResponse(res, code, body) {
   res.send(body);
 }
 
+function currentUserPrivilegeSetXml() {
+  return `<d:current-user-privilege-set>
+          <d:privilege><d:read/></d:privilege>
+          <d:privilege><d:write/></d:privilege>
+          <d:privilege><d:write-properties/></d:privilege>
+          <d:privilege><d:write-content/></d:privilege>
+        </d:current-user-privilege-set>`;
+}
+
 function normalizeCollectionPath(path) {
   if (path.length > 1 && path.endsWith("/")) return path.slice(0, -1);
   return path;
@@ -96,6 +105,7 @@ function multistatusForCollection(_baseUrl, user, calendarId, token, rows) {
     <d:propstat>
       <d:prop>
         <d:resourcetype><d:collection/><c:calendar/></d:resourcetype>
+        ${currentUserPrivilegeSetXml()}
         <d:supported-report-set>
           <d:supported-report><d:report><c:calendar-query/></d:report></d:supported-report>
           <d:supported-report><d:report><d:sync-collection/></d:report></d:supported-report>
@@ -120,6 +130,7 @@ function multistatusForPrincipal(_baseUrl, principal, calendars) {
       <d:prop>
         <d:displayname>${xmlEscape(cal.name)}</d:displayname>
         <d:resourcetype><d:collection/><c:calendar/></d:resourcetype>
+        ${currentUserPrivilegeSetXml()}
         <d:supported-report-set>
           <d:supported-report><d:report><c:calendar-query/></d:report></d:supported-report>
           <d:supported-report><d:report><d:sync-collection/></d:report></d:supported-report>
@@ -157,6 +168,7 @@ function multistatusForServiceRoot(_baseUrl, principal) {
     <d:propstat>
       <d:prop>
         <d:resourcetype><d:collection/></d:resourcetype>
+        ${currentUserPrivilegeSetXml()}
         <d:current-user-principal><d:href>${principalHref}</d:href></d:current-user-principal>
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
@@ -175,6 +187,7 @@ function multistatusForPrincipalRef(_baseUrl, principal, hrefPath) {
     <d:propstat>
       <d:prop>
         <d:resourcetype><d:collection/><d:principal/></d:resourcetype>
+        ${currentUserPrivilegeSetXml()}
         <d:displayname>${xmlEscape(principal.username)}</d:displayname>
         <c:calendar-home-set><d:href>${calendarHome}</d:href></c:calendar-home-set>
         <d:current-user-principal><d:href>${principalHref}</d:href></d:current-user-principal>
