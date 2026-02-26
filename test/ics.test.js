@@ -22,6 +22,21 @@ test("parseVtodo extracts key fields", () => {
   assert.equal(parsed.sequence, 9);
 });
 
+test("parseVtodo infers completed when COMPLETED exists", () => {
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "BEGIN:VTODO",
+    "UID:abc@nostr",
+    "SUMMARY:Ship it",
+    "COMPLETED:20260226T120000Z",
+    "END:VTODO",
+    "END:VCALENDAR"
+  ].join("\r\n");
+
+  const parsed = parseVtodo(ics);
+  assert.equal(parsed.internalStatus, "completed");
+});
+
 test("issueToVtodo encodes labels, url, and open status", () => {
   const raw = issueToVtodo({
     event_id: "f".repeat(64),

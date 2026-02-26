@@ -96,6 +96,35 @@ test("CalDAV PUT integration enforces ETag conflicts", async () => {
   db.close();
 });
 
+test("CalDAV PUT integration accepts weak If-Match", async () => {
+  const db = openDb(mkDbPath());
+  const issue = seedIssue(db);
+
+  const result = await processVtodoPut({
+    db,
+    syncService: {
+      async publishStatusFromCaldav() {
+        return { skipped: false, event: { id: "ok", kind: 1631 } };
+      }
+    },
+    uid: issue.caldav_uid,
+    ifMatch: `W/${issue.caldav_etag}`,
+    body: [
+      "BEGIN:VCALENDAR",
+      "BEGIN:VTODO",
+      `UID:${issue.caldav_uid}`,
+      "STATUS:COMPLETED",
+      "END:VTODO",
+      "END:VCALENDAR",
+      ""
+    ].join("\r\n")
+  });
+
+  assert.equal(result.status, 204);
+  assert.equal(db.getIssueByUid(issue.caldav_uid).status, "completed");
+  db.close();
+});
+
 test("Sync token selection and ICS rendering integration", () => {
   const db = openDb(mkDbPath());
   const issue = seedIssue(db);
