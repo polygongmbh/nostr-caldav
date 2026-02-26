@@ -53,6 +53,19 @@ function findReferencedIssueId(tags) {
   return findFirstTag(tags, "e");
 }
 
+function deriveIssueSubject(tags, content) {
+  const tagged = findFirstTag(tags, "subject");
+  if (tagged && String(tagged).trim()) return String(tagged).trim();
+
+  const firstLine = String(content || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+
+  if (firstLine) return firstLine.slice(0, 180);
+  return "(no subject)";
+}
+
 export function openDb(filePath) {
   const db = new Database(filePath);
   db.pragma("journal_mode = WAL");
@@ -146,7 +159,7 @@ export function openDb(filePath) {
   function upsertIssueFromNostr(event, relayUrl) {
     const existing = getIssueByEventIdStmt.get(event.id);
 
-    const subject = findFirstTag(event.tags, "subject") || "(no subject)";
+    const subject = deriveIssueSubject(event.tags, event.content);
     const labels = listTagValues(event.tags, "label");
     const sequence = (existing?.sequence || 0) + 1;
     const caldavUid = existing?.caldav_uid || `${event.id}@nostr-issues`;
