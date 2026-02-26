@@ -64,6 +64,7 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
       host: parsed?.caldav?.host || "0.0.0.0",
       port: parsed?.caldav?.port || 5232,
       baseUrl: parsed?.caldav?.base_url || "http://localhost:5232",
+      includeAutoPubkeyCalendars: parsed?.caldav?.include_auto_pubkey_calendars !== false,
       username: parsed?.caldav?.username || "user",
       password: parsed?.caldav?.password || "password",
       principals: normalizePrincipals(

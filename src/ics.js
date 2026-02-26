@@ -66,7 +66,10 @@ export function parseVtodo(rawIcs) {
     summary: props.SUMMARY || null,
     description: props.DESCRIPTION || null,
     sequence: props.SEQUENCE ? Number(props.SEQUENCE) : null,
-    internalStatus: toInternalFromVtodo(props.STATUS)
+    internalStatus:
+      toInternalFromVtodo(props.STATUS) ||
+      (props.COMPLETED ? "completed" : null) ||
+      (props["PERCENT-COMPLETE"] === "100" ? "completed" : null)
   };
 }
 

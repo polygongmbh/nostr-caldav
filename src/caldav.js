@@ -76,6 +76,14 @@ function calendarPath(user, calendarId) {
   return `/calendars/${user}/${calendarId}/`;
 }
 
+function decodePathSegment(value) {
+  try {
+    return decodeURIComponent(String(value || ""));
+  } catch {
+    return String(value || "");
+  }
+}
+
 function multistatusForCollection(_baseUrl, user, calendarId, token, rows) {
   const calendarHref = `${calendarPath(user, calendarId)}`;
   const responses = rows
@@ -200,6 +208,9 @@ function multistatusForPrincipalRef(_baseUrl, principal, hrefPath) {
 
 export function createCaldavServer({ db, caldavConfig, syncService, trackedPubkeys }) {
   const app = express();
+  const calendarOptions = {
+    includeAutoPubkeyCalendars: caldavConfig.includeAutoPubkeyCalendars
+  };
   const principals = caldavConfig.principals || [
     {
       username: caldavConfig.username,
@@ -224,6 +235,18 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     next();
   });
 
+  app.get("/debug/recent-writes", (req, res) => {
+    const limitRaw = req.query.limit;
+    const limit = Math.max(1, Math.min(Number(limitRaw) || 50, 200));
+    const rows = db.listSyncLog(limit);
+
+    return res.status(200).json({
+      generated_at: new Date().toISOString(),
+      count: rows.length,
+      rows
+    });
+  });
+
   app.get("/.well-known/caldav", (req, res) => {
     res.redirect(302, `/calendars/${req.principal.username}/`);
   });
@@ -233,7 +256,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
 
     const principal = req.principal;
     const syncToken = db.getSyncToken();
-    const calendars = buildPrincipalCalendars(principal, trackedPubkeys);
+    const calendars = buildPrincipalCalendars(principal, trackedPubkeys, calendarOptions);
     const normalizedPath = normalizeCollectionPath(req.path);
 
     if (normalizedPath === "/") {
@@ -274,7 +297,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     }
 
     const calendarId = collectionMatch[1];
-    const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId);
+    const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, calendarOptions);
     if (!calendar) {
       return res.status(404).send("Not found");
     }
@@ -288,14 +311,15 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
   });
 
   app.get(/^\/calendars\/([^/]+)\/([^/]+)\/([^/]+)\.ics$/, (req, res) => {
-    const [, user, calendarId, uid] = req.path.match(/^\/calendars\/([^/]+)\/([^/]+)\/([^/]+)\.ics$/) || [];
+    const [, user, calendarId, rawUid] = req.path.match(/^\/calendars\/([^/]+)\/([^/]+)\/([^/]+)\.ics$/) || [];
+    const uid = decodePathSegment(rawUid);
     const principal = req.principal;
 
     if (user !== principal.username) {
       return res.status(404).send("Not found");
     }
 
-    const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId);
+    const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, calendarOptions);
     if (!calendar) return res.status(404).send("Not found");
 
     const issue = db.getIssueByUid(uid);
@@ -309,20 +333,44 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
   });
 
   app.put(/^\/calendars\/([^/]+)\/([^/]+)\/([^/]+)\.ics$/, async (req, res) => {
-    const [, user, calendarId, uid] = req.path.match(/^\/calendars\/([^/]+)\/([^/]+)\/([^/]+)\.ics$/) || [];
+    const [, user, calendarId, rawUid] = req.path.match(/^\/calendars\/([^/]+)\/([^/]+)\/([^/]+)\.ics$/) || [];
+    const uid = decodePathSegment(rawUid);
     const principal = req.principal;
 
     if (user !== principal.username) {
+      db.logSync({
+        direction: "caldav_to_nostr",
+        eventId: uid,
+        action: "put_rejected_wrong_principal"
+      });
       return res.status(404).send("Not found");
     }
 
-    const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId);
-    if (!calendar) return res.status(404).send("Not found");
+    const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, calendarOptions);
+    if (!calendar) {
+      db.logSync({
+        direction: "caldav_to_nostr",
+        eventId: uid,
+        action: "put_rejected_unknown_calendar"
+      });
+      return res.status(404).send("Not found");
+    }
 
     const issue = db.getIssueByUid(uid);
     if (!issue || !issueVisibleInCalendar(issue, calendar)) {
+      db.logSync({
+        direction: "caldav_to_nostr",
+        eventId: uid,
+        action: "put_rejected_unknown_uid"
+      });
       return res.status(404).send("Not found");
     }
+
+    db.logSync({
+      direction: "caldav_to_nostr",
+      eventId: issue.event_id,
+      action: "put_received"
+    });
 
     const result = await processVtodoPut({
       db,
@@ -337,8 +385,20 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     }
 
     if (result.status === 204) {
+      db.logSync({
+        direction: "caldav_to_nostr",
+        eventId: issue.event_id,
+        action: "put_applied_204"
+      });
       return res.status(204).end();
     }
+
+    db.logSync({
+      direction: "caldav_to_nostr",
+      eventId: issue.event_id,
+      action: `put_failed_${result.status}`,
+      error: result.error
+    });
 
     return res.status(result.status).send(result.error);
   });

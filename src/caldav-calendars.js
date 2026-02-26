@@ -17,17 +17,20 @@ function uniqueById(calendars) {
   return out;
 }
 
-export function buildPrincipalCalendars(principal, trackedPubkeys) {
+export function buildPrincipalCalendars(principal, trackedPubkeys, options = {}) {
   const principalPubkeys = Array.isArray(principal.pubkeys) ? principal.pubkeys : [];
   const baseFilter = principalPubkeys.length > 0 ? { pubkeys: principalPubkeys } : {};
+  const includeAutoPubkeyCalendars = options.includeAutoPubkeyCalendars !== false;
 
-  const autoPubkeyCalendars = (trackedPubkeys || []).map((pubkey) => ({
+  const autoPubkeyCalendars = includeAutoPubkeyCalendars
+    ? (trackedPubkeys || []).map((pubkey) => ({
     id: `pubkey-${pubkey.slice(0, 12)}`,
     name: `Issues by ${pubkey.slice(0, 12)}`,
     filter: {
       pubkeys: principalPubkeys.length > 0 && !principalPubkeys.includes(pubkey) ? [] : [pubkey]
     }
-  }));
+      }))
+    : [];
 
   const configuredCalendars = (principal.calendars || []).map((cal) => ({
     id: sanitizeId(cal.id || cal.name),
@@ -54,8 +57,8 @@ export function buildPrincipalCalendars(principal, trackedPubkeys) {
   ]);
 }
 
-export function findCalendarForPrincipal(principal, trackedPubkeys, calendarId) {
-  const calendars = buildPrincipalCalendars(principal, trackedPubkeys);
+export function findCalendarForPrincipal(principal, trackedPubkeys, calendarId, options = {}) {
+  const calendars = buildPrincipalCalendars(principal, trackedPubkeys, options);
   return calendars.find((cal) => cal.id === calendarId) || null;
 }
 

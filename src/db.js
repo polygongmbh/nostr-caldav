@@ -74,6 +74,9 @@ export function openDb(filePath) {
   const getIssueByEventIdStmt = db.prepare("SELECT * FROM issues WHERE event_id = ?");
   const getIssueByUidStmt = db.prepare("SELECT * FROM issues WHERE caldav_uid = ?");
   const listIssuesStmt = db.prepare("SELECT * FROM issues ORDER BY created_at DESC");
+  const listSyncLogStmt = db.prepare(
+    "SELECT id, direction, event_id, action, timestamp, error FROM sync_log ORDER BY id DESC LIMIT ?"
+  );
 
   const upsertIssueStmt = db.prepare(`
     INSERT INTO issues (
@@ -338,6 +341,10 @@ export function openDb(filePath) {
     getIssueByUid: (uid) => getIssueByUidStmt.get(uid),
     getIssueByEventId: (eventId) => getIssueByEventIdStmt.get(eventId),
     listIssues: () => listIssuesStmt.all(),
+    listSyncLog: (limit = 50) => {
+      const n = Math.max(1, Math.min(Number(limit) || 50, 500));
+      return listSyncLogStmt.all(n);
+    },
     listIssuesFiltered,
     getConfigValue,
     setConfigValue,

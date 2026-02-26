@@ -18,6 +18,8 @@ caldav:
   port: 5232
   # Use your public HTTPS hostname when exposing via Caddy.
   base_url: "https://caldav.example.com"
+  # Set false to only expose the main "Nostr Issues" calendar.
+  include_auto_pubkey_calendars: true
 
   # Backward-compatible single principal
   username: "user"
@@ -30,11 +32,7 @@ caldav:
       # Restrict this principal to these issue authors (hex or npub)
       pubkeys: []
       # Extra filtered calendars for this principal
-      calendars:
-        - id: "bugs"
-          name: "Bug Issues"
-          labels: ["bug"]
-          statuses: ["open"]
+      calendars: []
 
 sync:
   poll_interval_seconds: 30

@@ -7,6 +7,23 @@ import {
   projectCalendarData
 } from "./caldav-query.js";
 
+function normalizeEtagValue(value) {
+  if (!value) return "";
+  return String(value).trim().replace(/^W\//i, "");
+}
+
+function ifMatchSatisfied(ifMatch, currentEtag) {
+  if (!ifMatch) return true;
+  const normalizedCurrent = normalizeEtagValue(currentEtag);
+  const candidates = String(ifMatch)
+    .split(",")
+    .map((v) => normalizeEtagValue(v))
+    .filter(Boolean);
+
+  if (candidates.includes("*")) return true;
+  return candidates.includes(normalizedCurrent);
+}
+
 export function selectIssuesForSync({ currentToken, requestedToken, issues }) {
   if (requestedToken && requestedToken >= currentToken) {
     return [];
@@ -44,15 +61,30 @@ export function runReportQuery({ issues, reportBody, syncToken }) {
 export async function processVtodoPut({ db, syncService, uid, ifMatch, body }) {
   const issue = db.getIssueByUid(uid);
   if (!issue) {
+    db.logSync({
+      direction: "caldav_to_nostr",
+      eventId: uid,
+      action: "put_rejected_not_found"
+    });
     return { status: 404, error: "Not found" };
   }
 
-  if (ifMatch && ifMatch !== issue.caldav_etag) {
+  if (!ifMatchSatisfied(ifMatch, issue.caldav_etag)) {
+    db.logSync({
+      direction: "caldav_to_nostr",
+      eventId: issue.event_id,
+      action: "put_rejected_etag_mismatch"
+    });
     return { status: 412, error: "Precondition Failed" };
   }
 
   const parsed = parseVtodo(body || "");
   if (!parsed.internalStatus) {
+    db.logSync({
+      direction: "caldav_to_nostr",
+      eventId: issue.event_id,
+      action: "put_rejected_invalid_status"
+    });
     return { status: 400, error: "VTODO STATUS is required and must be supported" };
   }
 
