@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { openDb } from "../src/db.js";
 import { issueToVtodo } from "../src/ics.js";
-import { processVtodoPut, runReportQuery, selectIssuesForSync } from "../src/caldav-core.js";
+import { processVtodoCreate, processVtodoPut, runReportQuery, selectIssuesForSync } from "../src/caldav-core.js";
 
 function mkDbPath() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nostr-caldav-it-"));
@@ -191,6 +191,58 @@ test("calendar-query filters by SUMMARY text-match", () => {
   assert.equal(report.type, "calendar-query");
   assert.equal(report.results.length, 1);
   assert.equal(report.results[0].issue.subject, "Initial issue");
+
+  db.close();
+});
+
+test("CalDAV PUT create integration publishes kind 1621 and stores UID mapping", async () => {
+  const db = openDb(mkDbPath());
+  const published = [];
+
+  const syncService = {
+    async createIssueFromCaldav({ uid, summary, description, labels, status }) {
+      published.push({ uid, summary, description, labels, status });
+      db.upsertIssueFromNostr(
+        {
+          id: "e".repeat(64),
+          pubkey: "f".repeat(64),
+          created_at: 1710000600,
+          kind: 1621,
+          content: description,
+          tags: [["subject", summary], ...labels.map((l) => ["label", l])]
+        },
+        "caldav-bridge"
+      );
+      db.setIssueUidFromCaldav({ eventId: "e".repeat(64), uid });
+      return { skipped: false, event: { id: "e".repeat(64), kind: 1621 } };
+    }
+  };
+
+  const uid = "reminders-new-1@local";
+  const result = await processVtodoCreate({
+    db,
+    syncService,
+    uid,
+    body: [
+      "BEGIN:VCALENDAR",
+      "BEGIN:VTODO",
+      `UID:${uid}`,
+      "SUMMARY:Created in Reminders",
+      "DESCRIPTION:hello",
+      "CATEGORIES:home,errands",
+      "STATUS:NEEDS-ACTION",
+      "END:VTODO",
+      "END:VCALENDAR",
+      ""
+    ].join("\r\n")
+  });
+
+  const issue = db.getIssueByUid(uid);
+  assert.equal(result.status, 201);
+  assert.ok(issue);
+  assert.equal(issue.subject, "Created in Reminders");
+  assert.equal(published.length, 1);
+  assert.deepEqual(published[0].labels, ["home", "errands"]);
 
   db.close();
 });
