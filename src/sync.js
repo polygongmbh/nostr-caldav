@@ -33,6 +33,38 @@ export function createSyncService({ db, publisher }) {
       return published;
     },
 
+    async createIssueFromCaldav({ uid, summary, description, labels = [], status = "open" }) {
+      const publishedIssue = await publisher.publishIssueCreate({ summary, description, labels });
+      if (publishedIssue.skipped) {
+        db.logSync({
+          direction: "caldav_to_nostr",
+          eventId: uid,
+          action: "create_issue_skipped",
+          error: publishedIssue.reason
+        });
+        return publishedIssue;
+      }
+
+      db.upsertIssueFromNostr(publishedIssue.event, "caldav-bridge");
+      db.setIssueUidFromCaldav({ eventId: publishedIssue.event.id, uid });
+
+      db.logSync({
+        direction: "caldav_to_nostr",
+        eventId: publishedIssue.event.id,
+        action: "published_kind_1621"
+      });
+
+      if (status && status !== "open") {
+        await this.publishStatusFromCaldav(publishedIssue.event.id, status);
+      }
+
+      return {
+        skipped: false,
+        event: publishedIssue.event,
+        issue: db.getIssueByEventId(publishedIssue.event.id)
+      };
+    },
+
     close() {
       if (publisher?.close) publisher.close();
     }

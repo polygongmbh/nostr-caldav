@@ -111,3 +111,54 @@ export async function processVtodoPut({ db, syncService, uid, ifMatch, body }) {
     changed: Boolean(update.changed)
   };
 }
+
+export async function processVtodoCreate({ db, syncService, uid, body }) {
+  const existing = db.getIssueByUid(uid);
+  if (existing) {
+    return { status: 409, error: "UID already exists" };
+  }
+
+  const parsed = parseVtodo(body || "");
+  const summary = String(parsed.summary || "").trim();
+  const description = String(parsed.description || "").trim();
+  const labels = Array.isArray(parsed.categories) ? parsed.categories : [];
+  const status = parsed.internalStatus || "open";
+
+  if (!summary && !description) {
+    db.logSync({
+      direction: "caldav_to_nostr",
+      eventId: uid,
+      action: "put_rejected_missing_content"
+    });
+    return { status: 400, error: "VTODO SUMMARY or DESCRIPTION is required" };
+  }
+
+  try {
+    const created = await syncService.createIssueFromCaldav({
+      uid,
+      summary: summary || description.slice(0, 180),
+      description,
+      labels,
+      status
+    });
+
+    if (created?.skipped) {
+      return { status: 502, error: "Failed to publish issue event to relays" };
+    }
+
+    const issue = db.getIssueByUid(uid);
+    return {
+      status: 201,
+      etag: issue?.caldav_etag || null,
+      eventId: created.event.id
+    };
+  } catch (error) {
+    db.logSync({
+      direction: "caldav_to_nostr",
+      eventId: uid,
+      action: "create_issue_failed",
+      error: String(error)
+    });
+    return { status: 502, error: "Failed to publish issue event to relays" };
+  }
+}

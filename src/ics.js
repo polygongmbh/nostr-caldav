@@ -39,6 +39,36 @@ function parsePropValue(line) {
   return line.slice(idx + 1).trim();
 }
 
+function splitCategories(raw) {
+  const src = String(raw || "");
+  if (!src) return [];
+
+  const out = [];
+  let current = "";
+  let escaped = false;
+  for (const ch of src) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === ",") {
+      const value = current.trim();
+      if (value) out.push(value);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  const value = current.trim();
+  if (value) out.push(value);
+  return out;
+}
+
 export function parseVtodo(rawIcs) {
   const lines = unfoldIcsLines(rawIcs);
   let inVtodo = false;
@@ -65,6 +95,7 @@ export function parseVtodo(rawIcs) {
     status: props.STATUS || null,
     summary: props.SUMMARY || null,
     description: props.DESCRIPTION || null,
+    categories: splitCategories(props.CATEGORIES || ""),
     sequence: props.SEQUENCE ? Number(props.SEQUENCE) : null,
     internalStatus:
       toInternalFromVtodo(props.STATUS) ||

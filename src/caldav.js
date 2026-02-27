@@ -1,7 +1,7 @@
 import express from "express";
 import morgan from "morgan";
 import { issueToVtodo } from "./ics.js";
-import { processVtodoPut, runReportQuery } from "./caldav-core.js";
+import { processVtodoCreate, processVtodoPut, runReportQuery } from "./caldav-core.js";
 import {
   buildPrincipalCalendars,
   findCalendarForPrincipal,
@@ -357,11 +357,32 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     }
 
     const issue = db.getIssueByUid(uid);
-    if (!issue || !issueVisibleInCalendar(issue, calendar)) {
+    if (!issue) {
+      const created = await processVtodoCreate({
+        db,
+        syncService,
+        uid,
+        body: req.body
+      });
+
+      if (created.etag) {
+        res.set("ETag", created.etag);
+      }
+      if (created.status === 201) {
+        db.logSync({
+          direction: "caldav_to_nostr",
+          eventId: created.eventId || uid,
+          action: "put_created_201"
+        });
+      }
+      return res.status(created.status).send(created.error || "");
+    }
+
+    if (!issueVisibleInCalendar(issue, calendar)) {
       db.logSync({
         direction: "caldav_to_nostr",
         eventId: uid,
-        action: "put_rejected_unknown_uid"
+        action: "put_rejected_not_visible"
       });
       return res.status(404).send("Not found");
     }

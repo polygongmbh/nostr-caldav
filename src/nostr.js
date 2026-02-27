@@ -99,6 +99,9 @@ export function createNostrPublisher({ relays, signer, onauth }) {
   if (!signer?.enabled) {
     return {
       enabled: false,
+      async publishIssueCreate() {
+        return { skipped: true, reason: "missing_signer" };
+      },
       async publishStatusChange() {
         return { skipped: true, reason: "missing_signer" };
       },
@@ -110,6 +113,24 @@ export function createNostrPublisher({ relays, signer, onauth }) {
 
   return {
     enabled: true,
+    async publishIssueCreate({ summary, description, labels = [] }) {
+      const tags = [];
+      if (summary) tags.push(["subject", summary]);
+      for (const label of labels) {
+        const value = String(label || "").trim();
+        if (value) tags.push(["label", value]);
+      }
+
+      const signed = await signer.signEvent({
+        kind: ISSUE_KIND,
+        created_at: Math.floor(Date.now() / 1000),
+        tags,
+        content: String(description || "")
+      });
+
+      await Promise.any(pool.publish(relays, signed, { onauth: onauth || undefined }));
+      return { skipped: false, event: signed };
+    },
     async publishStatusChange({ issueEventId, status }) {
       const kind = internalStatusToKind(status);
       if (!kind) {

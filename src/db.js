@@ -125,6 +125,14 @@ export function openDb(filePath) {
         last_modified = @last_modified
     WHERE caldav_uid = @caldav_uid
   `);
+  const updateUidByEventIdStmt = db.prepare(`
+    UPDATE issues
+    SET caldav_uid = @caldav_uid,
+        sequence = @sequence,
+        caldav_etag = @caldav_etag,
+        last_modified = @last_modified
+    WHERE event_id = @event_id
+  `);
 
   function getOrInitSyncToken() {
     const row = getConfigStmt.get("sync_token");
@@ -294,6 +302,34 @@ export function openDb(filePath) {
     };
   }
 
+  function setIssueUidFromCaldav({ eventId, uid }) {
+    const issue = getIssueByEventIdStmt.get(eventId);
+    if (!issue) {
+      return { changed: false, reason: "unknown_issue" };
+    }
+
+    if (issue.caldav_uid === uid) {
+      return { changed: false, issue, reason: "no_uid_change" };
+    }
+
+    const sequence = (issue.sequence || 0) + 1;
+    updateUidByEventIdStmt.run({
+      event_id: eventId,
+      caldav_uid: uid,
+      sequence,
+      caldav_etag: etagFor(issue.event_id, sequence),
+      last_modified: nowUnix()
+    });
+
+    bumpSyncToken();
+    logSync({ direction: "caldav_to_nostr", eventId: eventId, action: "uid_mapped" });
+
+    return {
+      changed: true,
+      issue: getIssueByEventIdStmt.get(eventId)
+    };
+  }
+
   function listIssuesFiltered({ pubkeys, labels, statuses, text } = {}) {
     let query = "SELECT * FROM issues";
     const where = [];
@@ -353,6 +389,7 @@ export function openDb(filePath) {
     applyStatusEventFromNostr,
     applyCommentEventFromNostr,
     updateStatusFromCaldav,
+    setIssueUidFromCaldav,
     bumpSyncToken,
     logSync,
     close: () => db.close()
