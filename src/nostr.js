@@ -116,6 +116,13 @@ export function createNostrPublisher({ relays, signer, onauth }) {
     async publishIssueCreate({ summary, description, labels = [] }) {
       const tags = [];
       if (summary) tags.push(["subject", summary]);
+      
+      // Extract hashtags from summary for nodex feed compatibility
+      const hashtags = (summary || "").match(/#\w+/g) || [];
+      for (const hashtag of hashtags) {
+        tags.push(["t", hashtag.slice(1)]); // Remove # prefix for t-tag
+      }
+      
       for (const label of labels) {
         const value = String(label || "").trim();
         if (value) tags.push(["label", value]);
@@ -125,7 +132,7 @@ export function createNostrPublisher({ relays, signer, onauth }) {
         kind: ISSUE_KIND,
         created_at: Math.floor(Date.now() / 1000),
         tags,
-        content: String(description || "")
+        content: String(description || summary || "")
       });
 
       await Promise.any(pool.publish(relays, signed, { onauth: onauth || undefined }));
