@@ -1,4 +1,4 @@
-# nostr-caldav-bridge (JS)
+# nostr-caldav-bridge
 
 Nostr Relay ↔ CalDAV bridge with two-way status sync for NIP-34 git issues.
 
