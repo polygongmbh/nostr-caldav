@@ -58,7 +58,18 @@ export function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
       relays: parsed?.nostr?.relays || [],
       followPubkeys: (parsed?.nostr?.follow_pubkeys || []).map(toHexPubkey),
       privateKey: parsed?.nostr?.private_key || null,
-      bunkerUrl: parsed?.nostr?.bunker_url || null
+      bunkerUrl: parsed?.nostr?.bunker_url || null,
+      noas: {
+        enabled: parsed?.nostr?.noas?.enabled === true,
+        baseUrl: parsed?.nostr?.noas?.base_url || null,
+        username: parsed?.nostr?.noas?.username || null,
+        apiPathPrefix: parsed?.nostr?.noas?.api_path_prefix || "/api/v1",
+        timeoutMs: parsed?.nostr?.noas?.timeout_ms || 10000,
+        caldavAuthEnabled: parsed?.nostr?.noas?.caldav_auth_enabled === true,
+        cacheTtlMs: parsed?.nostr?.noas?.cache_ttl_ms || 300000,
+        cacheMode: parsed?.nostr?.noas?.cache_mode || "encrypted",
+        domainBaseUrls: parsed?.nostr?.noas?.domain_base_urls || {}
+      }
     },
     caldav: {
       host: parsed?.caldav?.host || "0.0.0.0",

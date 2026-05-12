@@ -12,8 +12,8 @@ export function createSyncService({ db, publisher }) {
       db.applyCommentEventFromNostr(commentEvent);
     },
 
-    async publishStatusFromCaldav(issueEventId, status) {
-      const published = await publisher.publishStatusChange({ issueEventId, status });
+    async publishStatusFromCaldav(issueEventId, status, options = {}) {
+      const published = await publisher.publishStatusChange({ issueEventId, status, signer: options.authContext?.signer || null });
       if (published.skipped) {
         db.logSync({
           direction: "caldav_to_nostr",
@@ -33,8 +33,13 @@ export function createSyncService({ db, publisher }) {
       return published;
     },
 
-    async createIssueFromCaldav({ uid, summary, description, labels = [], status = "open" }) {
-      const publishedIssue = await publisher.publishIssueCreate({ summary, description, labels });
+    async createIssueFromCaldav({ uid, summary, description, labels = [], status = "open" }, options = {}) {
+      const publishedIssue = await publisher.publishIssueCreate({
+        summary,
+        description,
+        labels,
+        signer: options.authContext?.signer || null
+      });
       if (publishedIssue.skipped) {
         db.logSync({
           direction: "caldav_to_nostr",
@@ -55,7 +60,7 @@ export function createSyncService({ db, publisher }) {
       });
 
       if (status && status !== "open") {
-        await this.publishStatusFromCaldav(publishedIssue.event.id, status);
+        await this.publishStatusFromCaldav(publishedIssue.event.id, status, options);
       }
 
       return {

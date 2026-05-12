@@ -47,6 +47,14 @@ function localSigner(privateKeyBytes) {
   };
 }
 
+export function createLocalSignerFromPrivateKey(privateKey) {
+  const privateKeyBytes = decodePrivateKey(privateKey);
+  if (!privateKeyBytes) {
+    throw new Error("Missing private key");
+  }
+  return localSigner(privateKeyBytes);
+}
+
 async function bunkerSigner({ bunkerUrl, relays, db }) {
   ensureWebCrypto();
   const existingClientSecret = db.getConfigValue("bunker_client_secret_hex");

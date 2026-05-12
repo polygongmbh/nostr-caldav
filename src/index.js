@@ -4,6 +4,7 @@ import { NostrSubscriber, createNostrPublisher } from "./nostr.js";
 import { createCaldavServer } from "./caldav.js";
 import { createSyncService } from "./sync.js";
 import { createBridgeSigner, createNip42AuthSigner } from "./signer.js";
+import { createNoasAuthProvider } from "./noas-auth.js";
 
 function unixNow() {
   return Math.floor(Date.now() / 1000);
@@ -12,9 +13,32 @@ function unixNow() {
 async function main() {
   const config = loadConfig();
   const db = openDb(config.db.path);
+  const trackedPubkeys = Array.from(new Set((config.nostr.followPubkeys || []).map((p) => String(p).toLowerCase())));
+  let subscriber = null;
+  const noasAuthProvider = createNoasAuthProvider(config.nostr.noas, {
+    onAuthenticatedPubkey(pubkey, handle) {
+      const normalized = String(pubkey || "").trim().toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(normalized)) return;
+      if (!trackedPubkeys.includes(normalized)) {
+        trackedPubkeys.push(normalized);
+        console.log(`Auto-tracking NOAS user pubkey for ${handle}`);
+      }
+      if (subscriber) {
+        subscriber.addAuthor(normalized);
+      }
+    }
+  });
+  let resolvedBunkerUrl = null;
+
+  if (!config.nostr.noas?.enabled || !config.nostr.noas?.caldavAuthEnabled) {
+    throw new Error("NOAS-only mode required: set nostr.noas.enabled=true and nostr.noas.caldav_auth_enabled=true.");
+  }
+
+  resolvedBunkerUrl = null;
+
   const signer = await createBridgeSigner({
     privateKey: config.nostr.privateKey,
-    bunkerUrl: config.nostr.bunkerUrl,
+    bunkerUrl: resolvedBunkerUrl,
     relays: config.nostr.relays,
     db
   });
@@ -29,9 +53,9 @@ async function main() {
   const syncService = createSyncService({ db, publisher });
   const since = unixNow() - config.sync.lookbackDays * 24 * 60 * 60;
 
-  const subscriber = new NostrSubscriber({
+  subscriber = new NostrSubscriber({
     relays: config.nostr.relays,
-    authors: config.nostr.followPubkeys,
+    authors: trackedPubkeys,
     since,
     onIssue: (event) => {
       syncService.onIssueEvent(event, "multi-relay");
@@ -51,7 +75,8 @@ async function main() {
     db,
     caldavConfig: config.caldav,
     syncService,
-    trackedPubkeys: config.nostr.followPubkeys
+    trackedPubkeys,
+    noasAuthProvider
   });
 
   const server = app.listen(config.caldav.port, config.caldav.host, () => {

@@ -23,12 +23,26 @@ function parseBasicAuth(header) {
   };
 }
 
-function principalAuth(principals) {
-  return (req, res, next) => {
+function principalAuth(principals, noasAuthProvider) {
+  return async (req, res, next) => {
     const auth = parseBasicAuth(req.headers.authorization);
     if (!auth) {
       res.set("WWW-Authenticate", 'Basic realm="nostr-caldav"');
       return res.status(401).end();
+    }
+
+    if (noasAuthProvider?.enabled) {
+      try {
+        const authContext = await noasAuthProvider.authenticate(auth.username, auth.password);
+        if (!authContext?.principal) {
+          return res.status(403).send("Forbidden");
+        }
+        req.principal = authContext.principal;
+        req.authContext = authContext;
+        return next();
+      } catch {
+        return res.status(403).send("Forbidden");
+      }
     }
 
     const principal = principals.find((p) => p.username === auth.username && p.password === auth.password);
@@ -37,6 +51,7 @@ function principalAuth(principals) {
     }
 
     req.principal = principal;
+    req.authContext = null;
     return next();
   };
 }
@@ -77,11 +92,26 @@ function calendarPath(user, calendarId) {
 }
 
 function decodePathSegment(value) {
-  try {
-    return decodeURIComponent(String(value || ""));
-  } catch {
-    return String(value || "");
+  let current = String(value || "");
+  for (let i = 0; i < 3; i += 1) {
+    let next = current;
+    try {
+      next = decodeURIComponent(current);
+    } catch {
+      next = current;
+    }
+    if (next === current) break;
+    current = next;
   }
+  try {
+    return current;
+  } catch {
+    return current;
+  }
+}
+
+function matchesPrincipalUser(pathUser, principalUsername) {
+  return decodePathSegment(pathUser) === principalUsername;
 }
 
 function multistatusForCollection(_baseUrl, user, calendarId, token, rows) {
@@ -206,7 +236,7 @@ function multistatusForPrincipalRef(_baseUrl, principal, hrefPath) {
 </d:multistatus>`;
 }
 
-export function createCaldavServer({ db, caldavConfig, syncService, trackedPubkeys }) {
+export function createCaldavServer({ db, caldavConfig, syncService, trackedPubkeys, noasAuthProvider }) {
   const app = express();
   const calendarOptions = {
     includeAutoPubkeyCalendars: caldavConfig.includeAutoPubkeyCalendars
@@ -222,7 +252,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
 
   app.use(morgan("combined"));
   app.use(express.text({ type: "*/*", limit: "2mb" }));
-  app.use(principalAuth(principals));
+  app.use(principalAuth(principals, noasAuthProvider));
 
   app.options("*", (_req, res) => {
     res.set("Allow", "OPTIONS, PROPFIND, REPORT, GET, PUT, DELETE");
@@ -271,7 +301,8 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       return xmlResponse(res, 207, multistatusForPrincipalRef(caldavConfig.baseUrl, principal, "/principals/"));
     }
 
-    if (normalizedPath === `/principals/${principal.username}`) {
+    const principalMatch = normalizedPath.match(/^\/principals\/([^/]+)$/);
+    if (principalMatch && decodePathSegment(principalMatch[1]) === principal.username) {
       return xmlResponse(
         res,
         207,
@@ -279,7 +310,8 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       );
     }
 
-    if (normalizedPath.startsWith("/calendar/dav/user/")) {
+    const applePrincipalMatch = normalizedPath.match(/^\/calendar\/dav\/user\/([^/]+)$/);
+    if (applePrincipalMatch && decodePathSegment(applePrincipalMatch[1]) === principal.username) {
       return xmlResponse(
         res,
         207,
@@ -287,16 +319,20 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       );
     }
 
-    if (normalizedPath === `/calendars/${principal.username}`) {
+    const calendarHomeMatch = normalizedPath.match(/^\/calendars\/([^/]+)$/);
+    if (calendarHomeMatch && matchesPrincipalUser(calendarHomeMatch[1], principal.username)) {
       return xmlResponse(res, 207, multistatusForPrincipal(caldavConfig.baseUrl, principal, calendars));
     }
 
-    const collectionMatch = normalizedPath.match(new RegExp(`^/calendars/${principal.username}/([^/]+)$`));
+    const collectionMatch = normalizedPath.match(/^\/calendars\/([^/]+)\/([^/]+)$/);
     if (!collectionMatch) {
       return res.status(404).send("Not found");
     }
+    if (!matchesPrincipalUser(collectionMatch[1], principal.username)) {
+      return res.status(404).send("Not found");
+    }
 
-    const calendarId = collectionMatch[1];
+    const calendarId = decodePathSegment(collectionMatch[2]);
     const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, calendarOptions);
     if (!calendar) {
       return res.status(404).send("Not found");
@@ -311,7 +347,9 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
   });
 
   app.get(/^\/calendars\/([^/]+)\/([^/]+)\/([^/]+)\.ics$/, (req, res) => {
-    const [, user, calendarId, rawUid] = req.path.match(/^\/calendars\/([^/]+)\/([^/]+)\/([^/]+)\.ics$/) || [];
+    const [, rawUser, rawCalendarId, rawUid] = req.path.match(/^\/calendars\/([^/]+)\/([^/]+)\/([^/]+)\.ics$/) || [];
+    const user = decodePathSegment(rawUser);
+    const calendarId = decodePathSegment(rawCalendarId);
     const uid = decodePathSegment(rawUid);
     const principal = req.principal;
 
@@ -333,7 +371,9 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
   });
 
   app.put(/^\/calendars\/([^/]+)\/([^/]+)\/([^/]+)\.ics$/, async (req, res) => {
-    const [, user, calendarId, rawUid] = req.path.match(/^\/calendars\/([^/]+)\/([^/]+)\/([^/]+)\.ics$/) || [];
+    const [, rawUser, rawCalendarId, rawUid] = req.path.match(/^\/calendars\/([^/]+)\/([^/]+)\/([^/]+)\.ics$/) || [];
+    const user = decodePathSegment(rawUser);
+    const calendarId = decodePathSegment(rawCalendarId);
     const uid = decodePathSegment(rawUid);
     const principal = req.principal;
 
@@ -362,7 +402,8 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
         db,
         syncService,
         uid,
-        body: req.body
+        body: req.body,
+        authContext: req.authContext
       });
 
       if (created.etag) {
@@ -398,7 +439,8 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       syncService,
       uid,
       ifMatch: req.header("if-match"),
-      body: req.body
+      body: req.body,
+      authContext: req.authContext
     });
 
     if (result.etag) {

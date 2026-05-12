@@ -58,7 +58,7 @@ export function runReportQuery({ issues, reportBody, syncToken }) {
   };
 }
 
-export async function processVtodoPut({ db, syncService, uid, ifMatch, body }) {
+export async function processVtodoPut({ db, syncService, uid, ifMatch, body, authContext = null }) {
   const issue = db.getIssueByUid(uid);
   if (!issue) {
     db.logSync({
@@ -92,7 +92,7 @@ export async function processVtodoPut({ db, syncService, uid, ifMatch, body }) {
 
   if (update.changed) {
     try {
-      await syncService.publishStatusFromCaldav(update.issue.event_id, update.issue.status);
+      await syncService.publishStatusFromCaldav(update.issue.event_id, update.issue.status, { authContext });
     } catch (error) {
       db.logSync({
         direction: "caldav_to_nostr",
@@ -112,7 +112,7 @@ export async function processVtodoPut({ db, syncService, uid, ifMatch, body }) {
   };
 }
 
-export async function processVtodoCreate({ db, syncService, uid, body }) {
+export async function processVtodoCreate({ db, syncService, uid, body, authContext = null }) {
   const existing = db.getIssueByUid(uid);
   if (existing) {
     return { status: 409, error: "UID already exists" };
@@ -140,7 +140,7 @@ export async function processVtodoCreate({ db, syncService, uid, body }) {
       description,
       labels,
       status
-    });
+    }, { authContext });
 
     if (created?.skipped) {
       return { status: 502, error: "Failed to publish issue event to relays" };
