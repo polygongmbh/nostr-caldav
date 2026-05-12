@@ -5,13 +5,34 @@ nostr:
   follow_pubkeys:
     - "npub1replace_me"
 
-  # Option A: local signer key (CalDAV -> Nostr writeback)
-  # Supports nsec1... or 64-char hex.
+  # Unused in NOAS-only mode.
   private_key: null
 
-  # Option B: NIP-46 bunker signer URL / identifier.
-  # When set, bunker mode is preferred over private_key.
+  # Unused in NOAS-only mode.
   bunker_url: null
+
+  # Required: NOAS integration.
+  noas:
+    enabled: true
+    # For /srv/nodal/noas multi-tenant setup, use the tenant URL:
+    # - polygon.gmbh users: https://noas.polygon.gmbh
+    # - linkenfels.de users: https://noas.linkenfels.de
+    base_url: "https://noas.polygon.gmbh"
+    # Optional and ignored in NOAS CalDAV auth mode.
+    username: null
+    # Change if your NOAS is mounted under a custom base path.
+    api_path_prefix: "/api/v1"
+    timeout_ms: 10000
+    # Required in NOAS-only bridge mode:
+    # username=handle (e.g. janek@polygon.gmbh), password=NOAS password.
+    caldav_auth_enabled: true
+    # Optional per-domain NOAS URL mapping for handle domains.
+    domain_base_urls:
+      polygon.gmbh: "https://noas.polygon.gmbh"
+      linkenfels.de: "https://noas.linkenfels.de"
+    # Cache mode: encrypted (recommended) or decrypted
+    cache_mode: "encrypted"
+    cache_ttl_ms: 300000
 
 caldav:
   host: "::"
@@ -21,14 +42,14 @@ caldav:
   # Set false to only expose the main "Nostr Issues" calendar.
   include_auto_pubkey_calendars: true
 
-  # Backward-compatible single principal
-  username: "user"
-  password: "password"
+  # Unused in NOAS-only mode; keep placeholders.
+  username: "unused"
+  password: "unused"
 
-  # Optional explicit multi-principal configuration
+  # Unused in NOAS-only mode.
   principals:
-    - username: "user"
-      password: "password"
+    - username: "unused"
+      password: "unused"
       # Restrict this principal to these issue authors (hex or npub)
       pubkeys: []
       # Extra filtered calendars for this principal

@@ -35,3 +35,24 @@ caldav:
   assert.equal(cfg.caldav.principals[0].calendars[0].id, "bugs");
   assert.equal(cfg.nostr.followPubkeys.length, 1);
 });
+
+test("loadConfig parses optional NOAS signer config", () => {
+  const pathToConfig = writeTempConfig(`
+nostr:
+  relays: ["wss://relay.example"]
+  follow_pubkeys: ["${"ab".repeat(32)}"]
+  noas:
+    enabled: true
+    base_url: "https://noas.example.com"
+    username: "alice"
+    api_path_prefix: "/api/v1"
+    timeout_ms: 9000
+`);
+
+  const cfg = loadConfig(pathToConfig);
+  assert.equal(cfg.nostr.noas.enabled, true);
+  assert.equal(cfg.nostr.noas.baseUrl, "https://noas.example.com");
+  assert.equal(cfg.nostr.noas.username, "alice");
+  assert.equal(cfg.nostr.noas.apiPathPrefix, "/api/v1");
+  assert.equal(cfg.nostr.noas.timeoutMs, 9000);
+});

@@ -9,7 +9,7 @@ Nostr Relay ↔ CalDAV bridge with two-way status sync for NIP-34 git issues.
   - status kinds `1630-1633`
   - comment kind `1622`
 - NIP-42 relay auth support for read/write operations
-- NIP-46 bunker signer support (`bunker_url`) plus local key signer fallback
+- NOAS-backed CalDAV authentication (`handle@domain + password`) for per-user signing
 - SQLite state store with:
   - sync token tracking
   - ETag/SEQUENCE conflict handling
@@ -54,7 +54,8 @@ caddy run --config ./Caddyfile
 
 5. In Apple Reminders CalDAV account:
    - Server: `caldav.example.com`
-   - Username/password: values from `config.yaml`
+   - Username: NOAS handle (example `janek@polygon.gmbh`)
+   - Password: NOAS account password
    - SSL: on (default)
 
 ## Test
@@ -73,17 +74,31 @@ npm test
 - `DELETE /calendars/{user}/{calendarId}/{uid}.ics` (returns `405`)
 - `REPORT /calendars/{user}/{calendarId}/`
 
-## Signer Modes
+## Auth Mode
 
-`nostr.private_key`:
-- `nsec1...`
-- 64-char hex private key
+This bridge runs in NOAS-only auth mode.
 
-`nostr.bunker_url`:
-- NIP-46 bunker URL/identifier
-- when set, bunker mode is used and local key mode is ignored
+`nostr.noas`:
+- `enabled` must be `true`
+- `caldav_auth_enabled` must be `true`
+- CalDAV basic auth is validated against NOAS `POST /auth/signin` using handle/password
+- bridge decrypts `private_key_encrypted` with the provided password for signing and caches session data in memory
 
-If neither is set, CalDAV status changes are stored locally but Nostr publish is skipped.
+Example:
+
+```yaml
+nostr:
+  noas:
+    enabled: true
+    base_url: "https://noas.example.com"
+    api_path_prefix: "/api/v1"
+    timeout_ms: 10000
+    caldav_auth_enabled: true
+    domain_base_urls:
+      example.com: "https://noas.example.com"
+    cache_mode: "encrypted"
+    cache_ttl_ms: 300000
+```
 
 ## Docker
 
