@@ -23,9 +23,6 @@ async function main() {
         trackedPubkeys.push(normalized);
         console.log(`Auto-tracking NOAS user pubkey for ${handle}`);
       }
-      if (subscriber) {
-        subscriber.addAuthor(normalized);
-      }
     }
   });
   let resolvedBunkerUrl = null;
@@ -76,12 +73,24 @@ async function main() {
     caldavConfig: config.caldav,
     syncService,
     trackedPubkeys,
-    noasAuthProvider
+    noasAuthProvider,
+    onAuthenticatedContext: (authContext) => {
+      const pubkey = authContext?.principal?.pubkeys?.[0];
+      const normalized = String(pubkey || "").trim().toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(normalized)) return;
+      if (!trackedPubkeys.includes(normalized)) {
+        trackedPubkeys.push(normalized);
+      }
+      if (subscriber) {
+        subscriber.addAuthor(normalized, authContext.signer || null);
+      }
+    }
   });
 
   const server = app.listen(config.caldav.port, config.caldav.host, () => {
     console.log(`CalDAV server listening on ${config.caldav.host}:${config.caldav.port}`);
-    console.log(`Nostr writeback enabled: ${publisher.enabled ? "yes" : "no"}`);
+    const perUserWriteback = config.nostr.noas?.enabled && config.nostr.noas?.caldavAuthEnabled;
+    console.log(`Nostr writeback enabled: ${publisher.enabled || perUserWriteback ? "yes" : "no"}`);
     console.log(`Signer mode: ${signer.mode}`);
   });
 

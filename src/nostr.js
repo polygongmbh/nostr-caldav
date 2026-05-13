@@ -18,19 +18,11 @@ export class NostrSubscriber {
     this.onComment = onComment;
     this.onauth = onauth;
     this.seen = new Set();
+    this.authorSigners = new Map();
   }
 
-  start() {
-    const issueFilter = {
-      kinds: [ISSUE_KIND],
-      since: this.since
-    };
-
-    if (Array.isArray(this.authors) && this.authors.length > 0) {
-      issueFilter.authors = this.authors;
-    }
-
-    const eventHandler = (event) => {
+  makeEventHandler() {
+    return (event) => {
       if (this.seen.has(event.id)) return;
       this.seen.add(event.id);
 
@@ -50,76 +42,93 @@ export class NostrSubscriber {
         this.onComment(event, issueId);
       }
     };
+  }
 
-    const commonParams = {
-      onauth: this.onauth || undefined,
+  buildOnauthForSigner(signerOverride) {
+    if (signerOverride?.enabled) {
+      return async (eventTemplate) => signerOverride.signEvent(eventTemplate);
+    }
+    return this.onauth || undefined;
+  }
+
+  subscribeAuthor(pubkey, signerOverride = null) {
+    const onauth = this.buildOnauthForSigner(signerOverride);
+    const eventHandler = this.makeEventHandler();
+
+    const makeParams = () => ({
+      onauth,
       onevent: eventHandler,
       oneose: () => {},
       onclose: (reasons) => {
         console.error("Nostr subscription closed", reasons);
       }
-    };
+    });
 
-    // subscribeMany accepts a single filter per subscription.
-    const issueSub = this.pool.subscribeMany(this.relays, issueFilter, commonParams);
-    this.subs = [
-      issueSub,
+    const subscriptions = [
+      this.pool.subscribeMany(
+        this.relays,
+        { kinds: [ISSUE_KIND], since: this.since, authors: [pubkey] },
+        makeParams()
+      ),
       this.pool.subscribeMany(
         this.relays,
         {
           kinds: [1630, 1631, 1632, 1633],
-          since: this.since
+          since: this.since,
+          authors: [pubkey]
         },
-        commonParams
+        makeParams()
       ),
       this.pool.subscribeMany(
         this.relays,
         {
           kinds: [COMMENT_KIND],
-          since: this.since
+          since: this.since,
+          authors: [pubkey]
         },
-        commonParams
+        makeParams()
       )
     ];
-    this.issueSubs = [issueSub];
+    return subscriptions;
+  }
+
+  start() {
+    this.subs = [];
+    if (Array.isArray(this.authors)) {
+      for (const author of this.authors) {
+        const normalized = String(author || "").trim().toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(normalized)) continue;
+        const signer = this.authorSigners.get(normalized) || null;
+        const authorSubs = this.subscribeAuthor(normalized, signer);
+        this.subs.push(...authorSubs);
+      }
+    }
 
     return this.subs;
   }
 
-  addAuthor(pubkey) {
+  addAuthor(pubkey, signerOverride = null) {
     const value = String(pubkey || "").trim().toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(value)) return;
-    if (Array.isArray(this.authors) && this.authors.includes(value)) return;
+    const alreadyTracked = Array.isArray(this.authors) && this.authors.includes(value);
+    if (alreadyTracked) {
+      if (signerOverride?.enabled) {
+        this.authorSigners.set(value, signerOverride);
+      }
+      return;
+    }
 
     if (!Array.isArray(this.authors)) {
       this.authors = [];
     }
     this.authors.push(value);
+    if (signerOverride?.enabled) {
+      this.authorSigners.set(value, signerOverride);
+    }
 
-    const sub = this.pool.subscribeMany(
-      this.relays,
-      {
-        kinds: [ISSUE_KIND],
-        since: this.since,
-        authors: [value]
-      },
-      {
-        onauth: this.onauth || undefined,
-        onevent: (event) => {
-          if (this.seen.has(event.id)) return;
-          this.seen.add(event.id);
-          if (event.kind === ISSUE_KIND) {
-            this.onIssue(event);
-          }
-        },
-        oneose: () => {},
-        onclose: () => {}
-      }
-    );
-    if (!Array.isArray(this.issueSubs)) this.issueSubs = [];
-    this.issueSubs.push(sub);
+    const addedSubs = this.subscribeAuthor(value, signerOverride);
     if (!Array.isArray(this.subs)) this.subs = [];
-    this.subs.push(sub);
+    this.subs.push(...addedSubs);
   }
 
   stop() {

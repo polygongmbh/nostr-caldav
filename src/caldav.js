@@ -23,7 +23,7 @@ function parseBasicAuth(header) {
   };
 }
 
-function principalAuth(principals, noasAuthProvider) {
+function principalAuth(principals, noasAuthProvider, onAuthenticatedContext) {
   return async (req, res, next) => {
     const auth = parseBasicAuth(req.headers.authorization);
     if (!auth) {
@@ -39,6 +39,9 @@ function principalAuth(principals, noasAuthProvider) {
         }
         req.principal = authContext.principal;
         req.authContext = authContext;
+        if (typeof onAuthenticatedContext === "function") {
+          onAuthenticatedContext(authContext);
+        }
         return next();
       } catch {
         return res.status(403).send("Forbidden");
@@ -236,7 +239,7 @@ function multistatusForPrincipalRef(_baseUrl, principal, hrefPath) {
 </d:multistatus>`;
 }
 
-export function createCaldavServer({ db, caldavConfig, syncService, trackedPubkeys, noasAuthProvider }) {
+export function createCaldavServer({ db, caldavConfig, syncService, trackedPubkeys, noasAuthProvider, onAuthenticatedContext }) {
   const app = express();
   const calendarOptions = {
     includeAutoPubkeyCalendars: caldavConfig.includeAutoPubkeyCalendars
@@ -252,7 +255,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
 
   app.use(morgan("combined"));
   app.use(express.text({ type: "*/*", limit: "2mb" }));
-  app.use(principalAuth(principals, noasAuthProvider));
+  app.use(principalAuth(principals, noasAuthProvider, onAuthenticatedContext));
 
   app.options("*", (_req, res) => {
     res.set("Allow", "OPTIONS, PROPFIND, REPORT, GET, PUT, DELETE");

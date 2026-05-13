@@ -49,7 +49,7 @@ export function buildPrincipalCalendars(principal, trackedPubkeys, options = {})
   return uniqueById([
     {
       id: "nostr-issues",
-      name: "Nostr Issues",
+      name: "Your Issues",
       filter: baseFilter
     },
     ...autoPubkeyCalendars,
