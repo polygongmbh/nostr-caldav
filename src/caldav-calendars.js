@@ -135,7 +135,7 @@ export function issueVisibleInCalendar(issue, calendar) {
   return true;
 }
 
-export function issueVisibleToPrincipal(issue, principal) {
+export function issueVisibleToPrincipal(issue, principal, options = {}) {
   const myPubkey = String(principal?.pubkeys?.[0] || "").trim().toLowerCase();
   const myHandle = normalizeHandle(principal?.username);
   const issueAuthor = String(issue?.pubkey || "").trim().toLowerCase();
@@ -147,5 +147,19 @@ export function issueVisibleToPrincipal(issue, principal) {
 
   if (mentionsMe) return true;
   if (createdByMe && !hasAnyMentions) return true;
+
+  const parentId = String(issue?.parent_event_id || "").trim();
+  const seen = options.seen instanceof Set ? options.seen : new Set();
+  if (parentId && typeof options.getIssueByEventId === "function" && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = options.getIssueByEventId(parentId);
+    if (parent) {
+      return issueVisibleToPrincipal(parent, principal, {
+        ...options,
+        seen
+      });
+    }
+  }
+
   return false;
 }

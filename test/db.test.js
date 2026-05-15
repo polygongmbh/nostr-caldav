@@ -109,3 +109,46 @@ test("issues persist channel and mention tags and support channel filtering", ()
 
   db.close();
 });
+
+test("parent tasks with subtasks are hidden from filtered task lists", () => {
+  const db = openDb(mkDbPath());
+  const parentId = "a".repeat(64);
+  const childId = "b".repeat(64);
+  const author = "c".repeat(64);
+
+  db.upsertIssueFromNostr(
+    {
+      id: parentId,
+      pubkey: author,
+      created_at: 1710000000,
+      kind: 1621,
+      content: "parent body",
+      tags: [["subject", "Parent task"], ["t", "ops"]]
+    },
+    "wss://relay.example"
+  );
+
+  db.upsertIssueFromNostr(
+    {
+      id: childId,
+      pubkey: author,
+      created_at: 1710000100,
+      kind: 1621,
+      content: "child body",
+      tags: [["subject", "Child task"], ["t", "ops"], ["e", parentId, "", "parent"]]
+    },
+    "wss://relay.example"
+  );
+
+  const parent = db.getIssueByEventId(parentId);
+  const child = db.getIssueByEventId(childId);
+  const filtered = db.listIssuesFiltered({ tags: ["ops"] });
+
+  assert.equal(child.parent_event_id, parentId);
+  assert.equal(db.issueHasSubtasks(parentId), true);
+  assert.equal(db.issueHasSubtasks(childId), false);
+  assert.deepEqual(filtered.map((issue) => issue.event_id), [childId]);
+  assert.equal(parent.subject, "Parent task");
+
+  db.close();
+});

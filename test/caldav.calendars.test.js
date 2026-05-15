@@ -83,3 +83,31 @@ test("issueVisibleToPrincipal allows mention to me and my own unmentioned tasks 
   };
   assert.equal(issueVisibleToPrincipal(mineMentionsOther, principal), false);
 });
+
+test("issueVisibleToPrincipal allows children of visible parent tasks", () => {
+  const principal = {
+    username: "me@example.com",
+    pubkeys: ["a".repeat(64)]
+  };
+  const parent = {
+    event_id: "p".repeat(64),
+    pubkey: "b".repeat(64),
+    mention_pubkeys: JSON.stringify(["a".repeat(64)]),
+    mention_handles: JSON.stringify([])
+  };
+  const child = {
+    pubkey: "c".repeat(64),
+    parent_event_id: parent.event_id,
+    mention_pubkeys: JSON.stringify([]),
+    mention_handles: JSON.stringify([])
+  };
+
+  assert.equal(
+    issueVisibleToPrincipal(child, principal, {
+      getIssueByEventId(eventId) {
+        return eventId === parent.event_id ? parent : null;
+      }
+    }),
+    true
+  );
+});

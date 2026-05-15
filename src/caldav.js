@@ -87,14 +87,18 @@ function xmlEscape(value) {
     .replace(/>/g, "&gt;");
 }
 
-function withPrincipalVisibility(issues, principal) {
-  return (issues || []).filter((issue) => issueVisibleToPrincipal(issue, principal));
+function withPrincipalVisibility(issues, principal, db = null) {
+  return (issues || []).filter((issue) =>
+    issueVisibleToPrincipal(issue, principal, {
+      getIssueByEventId: db?.getIssueByEventId
+    })
+  );
 }
 
 function resolveChannelTags(db, principal) {
   if (typeof db?.listIssues !== "function") return [];
   const tags = new Set();
-  const visible = withPrincipalVisibility(db.listIssues(), principal);
+  const visible = withPrincipalVisibility(db.listIssues(), principal, db);
   for (const issue of visible) {
     let channelTags = [];
     try {
@@ -321,7 +325,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       ...calendarOptions,
       channelTags
     });
-    const visibleCount = withPrincipalVisibility(db.listIssues(), principal).length;
+    const visibleCount = withPrincipalVisibility(db.listIssues(), principal, db).length;
     return res.status(200).json({
       generated_at: new Date().toISOString(),
       principal: principal?.username || null,
@@ -405,10 +409,15 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       return res.status(404).send("Not found");
     }
 
-    const baseIssues = withPrincipalVisibility(listIssuesForCalendar(db, calendar), principal);
+    const baseIssues = withPrincipalVisibility(listIssuesForCalendar(db, calendar), principal, db);
     const report = req.method === "REPORT" ? runReportQuery({ issues: baseIssues, reportBody: req.body, syncToken }) : null;
     const depth = String(req.header("depth") || "1");
     const rows = depth === "0" && req.method === "PROPFIND" ? [] : report?.results || report?.issues || baseIssues;
+    console.log(
+      `[caldav] principal=${principal.username} calendar=${calendarId} method=${req.method} depth=${depth} report=${
+        report?.type || "none"
+      } visible=${baseIssues.length} rows=${rows.length} children=${baseIssues.filter((issue) => issue.parent_event_id).length}`
+    );
 
     return xmlResponse(res, 207, multistatusForCollection(caldavConfig.baseUrl, principal.username, calendarId, syncToken, rows));
   });
@@ -431,7 +440,12 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     if (!calendar) return res.status(404).send("Not found");
 
     const issue = db.getIssueByUid(uid);
-    if (!issue || !issueVisibleInCalendar(issue, calendar) || !issueVisibleToPrincipal(issue, principal)) {
+    if (
+      !issue ||
+      db.issueHasSubtasks?.(issue.event_id) ||
+      !issueVisibleInCalendar(issue, calendar) ||
+      !issueVisibleToPrincipal(issue, principal, { getIssueByEventId: db.getIssueByEventId })
+    ) {
       return res.status(404).send("Not found");
     }
 
@@ -493,7 +507,11 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       return res.status(created.status).send(created.error || "");
     }
 
-    if (!issueVisibleInCalendar(issue, calendar) || !issueVisibleToPrincipal(issue, principal)) {
+    if (
+      db.issueHasSubtasks?.(issue.event_id) ||
+      !issueVisibleInCalendar(issue, calendar) ||
+      !issueVisibleToPrincipal(issue, principal, { getIssueByEventId: db.getIssueByEventId })
+    ) {
       db.logSync({
         direction: "caldav_to_nostr",
         eventId: uid,

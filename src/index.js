@@ -86,6 +86,25 @@ async function main() {
     }
   }
 
+  if (db.getConfigValue("parent_metadata_backfill_v1") !== "complete") {
+    const legacyIssueIds = db.listIssueEventIds(5000);
+    if (legacyIssueIds.length > 0) {
+      console.log(`Backfill: refetching ${legacyIssueIds.length} legacy issues to recover parent task metadata`);
+      try {
+        const result = await subscriber.refetchIssuesByIds(legacyIssueIds, {
+          chunkSize: 200,
+          timeoutMs: 12000
+        });
+        db.setConfigValue("parent_metadata_backfill_v1", "complete");
+        console.log(`Parent metadata backfill complete: requested=${result.requested} chunks=${result.chunks}`);
+      } catch (error) {
+        console.error("Parent metadata backfill failed", error);
+      }
+    } else {
+      db.setConfigValue("parent_metadata_backfill_v1", "complete");
+    }
+  }
+
   const app = createCaldavServer({
     db,
     caldavConfig: config.caldav,
