@@ -137,6 +137,52 @@ export class NostrSubscriber {
     }
     this.pool.close(this.relays);
   }
+
+  async refetchIssuesByIds(eventIds = [], options = {}) {
+    const ids = Array.from(
+      new Set(
+        (eventIds || [])
+          .map((value) => String(value || "").trim().toLowerCase())
+          .filter((value) => /^[0-9a-f]{64}$/.test(value))
+      )
+    );
+    if (ids.length === 0) return { requested: 0, chunks: 0 };
+
+    const chunkSize = Math.max(1, Math.min(Number(options.chunkSize) || 200, 500));
+    const timeoutMs = Math.max(1000, Math.min(Number(options.timeoutMs) || 10000, 60000));
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += chunkSize) {
+      chunks.push(ids.slice(i, i + chunkSize));
+    }
+
+    const eventHandler = this.makeEventHandler();
+
+    for (const chunk of chunks) {
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          sub?.close?.();
+          resolve();
+        };
+
+        const timer = setTimeout(finish, timeoutMs);
+        const sub = this.pool.subscribeMany(
+          this.relays,
+          { kinds: [ISSUE_KIND], ids: chunk },
+          {
+            onevent: eventHandler,
+            oneose: finish,
+            onclose: finish
+          }
+        );
+      });
+    }
+
+    return { requested: ids.length, chunks: chunks.length };
+  }
 }
 
 export function createNostrPublisher({ relays, signer, onauth }) {
@@ -145,7 +191,7 @@ export function createNostrPublisher({ relays, signer, onauth }) {
 
   return {
     enabled: Boolean(signer?.enabled),
-    async publishIssueCreate({ summary, description, labels = [], signer: signerOverride = null }) {
+    async publishIssueCreate({ summary, description, channelTag = null, labels = [], signer: signerOverride = null }) {
       const activeSigner = signerOverride || signer;
       const activeOnauth = activeSigner ? async (eventTemplate) => activeSigner.signEvent(eventTemplate) : onauth || undefined;
       if (!activeSigner?.enabled) {
@@ -154,6 +200,7 @@ export function createNostrPublisher({ relays, signer, onauth }) {
 
       const tags = [];
       if (summary) tags.push(["subject", summary]);
+      if (channelTag) tags.push(["t", String(channelTag).trim().toLowerCase()]);
       
       // Extract hashtags from summary for nodex feed compatibility
       const hashtags = (summary || "").match(/#\w+/g) || [];

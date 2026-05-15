@@ -5,6 +5,7 @@ import { processVtodoCreate, processVtodoPut, runReportQuery } from "./caldav-co
 import {
   buildPrincipalCalendars,
   findCalendarForPrincipal,
+  issueVisibleToPrincipal,
   issueVisibleInCalendar,
   listIssuesForCalendar
 } from "./caldav-calendars.js";
@@ -84,6 +85,39 @@ function xmlEscape(value) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function withPrincipalVisibility(issues, principal) {
+  return (issues || []).filter((issue) => issueVisibleToPrincipal(issue, principal));
+}
+
+function resolveChannelTags(db, principal) {
+  if (typeof db?.listIssues !== "function") return [];
+  const tags = new Set();
+  const visible = withPrincipalVisibility(db.listIssues(), principal);
+  for (const issue of visible) {
+    let channelTags = [];
+    try {
+      channelTags = JSON.parse(issue.channel_tags || "[]");
+    } catch {
+      channelTags = [];
+    }
+    for (const tag of channelTags) {
+      const value = String(tag || "").trim().toLowerCase();
+      if (value) tags.add(value);
+    }
+  }
+  const scoped = Array.from(tags).sort();
+  if (scoped.length > 0) return scoped;
+  return [];
+}
+
+function summarizeCalendars(calendars) {
+  return (calendars || []).map((cal) => ({
+    id: cal.id,
+    name: cal.name,
+    channelTag: cal.channelTag || null
+  }));
 }
 
 function objectPath(user, calendarId, uid) {
@@ -280,6 +314,25 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     });
   });
 
+  app.get("/debug/calendars", (req, res) => {
+    const principal = req.principal;
+    const channelTags = resolveChannelTags(db, principal);
+    const calendars = buildPrincipalCalendars(principal, trackedPubkeys, {
+      ...calendarOptions,
+      channelTags
+    });
+    const visibleCount = withPrincipalVisibility(db.listIssues(), principal).length;
+    return res.status(200).json({
+      generated_at: new Date().toISOString(),
+      principal: principal?.username || null,
+      principal_pubkey: principal?.pubkeys?.[0] || null,
+      visible_issue_count: visibleCount,
+      channel_tag_count: channelTags.length,
+      sample_channel_tags: channelTags.slice(0, 50),
+      calendars: summarizeCalendars(calendars)
+    });
+  });
+
   app.get("/.well-known/caldav", (req, res) => {
     res.redirect(302, `/calendars/${req.principal.username}/`);
   });
@@ -289,8 +342,19 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
 
     const principal = req.principal;
     const syncToken = db.getSyncToken();
-    const calendars = buildPrincipalCalendars(principal, trackedPubkeys, calendarOptions);
     const normalizedPath = normalizeCollectionPath(req.path);
+    const calendars = buildPrincipalCalendars(principal, trackedPubkeys, {
+      ...calendarOptions,
+      channelTags: resolveChannelTags(db, principal)
+    });
+    if (normalizedPath.match(/^\/calendars\/[^/]+$/)) {
+      const summary = summarizeCalendars(calendars);
+      console.log(
+        `[caldav] principal=${principal.username} calendar-home calendars=${summary.length} channels=${
+          summary.filter((c) => c.channelTag).length
+        } sample=${summary.slice(0, 10).map((c) => c.id).join(",")}`
+      );
+    }
 
     if (normalizedPath === "/") {
       return xmlResponse(res, 207, multistatusForServiceRoot(caldavConfig.baseUrl, principal));
@@ -341,7 +405,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       return res.status(404).send("Not found");
     }
 
-    const baseIssues = listIssuesForCalendar(db, calendar);
+    const baseIssues = withPrincipalVisibility(listIssuesForCalendar(db, calendar), principal);
     const report = req.method === "REPORT" ? runReportQuery({ issues: baseIssues, reportBody: req.body, syncToken }) : null;
     const depth = String(req.header("depth") || "1");
     const rows = depth === "0" && req.method === "PROPFIND" ? [] : report?.results || report?.issues || baseIssues;
@@ -360,11 +424,14 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       return res.status(404).send("Not found");
     }
 
-    const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, calendarOptions);
+    const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, {
+      ...calendarOptions,
+      channelTags: resolveChannelTags(db, principal)
+    });
     if (!calendar) return res.status(404).send("Not found");
 
     const issue = db.getIssueByUid(uid);
-    if (!issue || !issueVisibleInCalendar(issue, calendar)) {
+    if (!issue || !issueVisibleInCalendar(issue, calendar) || !issueVisibleToPrincipal(issue, principal)) {
       return res.status(404).send("Not found");
     }
 
@@ -389,7 +456,10 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       return res.status(404).send("Not found");
     }
 
-    const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, calendarOptions);
+    const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, {
+      ...calendarOptions,
+      channelTags: resolveChannelTags(db, principal)
+    });
     if (!calendar) {
       db.logSync({
         direction: "caldav_to_nostr",
@@ -406,6 +476,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
         syncService,
         uid,
         body: req.body,
+        channelTag: calendar.channelTag || null,
         authContext: req.authContext
       });
 
@@ -422,7 +493,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       return res.status(created.status).send(created.error || "");
     }
 
-    if (!issueVisibleInCalendar(issue, calendar)) {
+    if (!issueVisibleInCalendar(issue, calendar) || !issueVisibleToPrincipal(issue, principal)) {
       db.logSync({
         direction: "caldav_to_nostr",
         eventId: uid,

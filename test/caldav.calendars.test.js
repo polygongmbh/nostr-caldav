@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildPrincipalCalendars, issueVisibleInCalendar } from "../src/caldav-calendars.js";
+import { buildPrincipalCalendars, issueVisibleInCalendar, issueVisibleToPrincipal } from "../src/caldav-calendars.js";
 
 test("buildPrincipalCalendars creates base and pubkey calendars", () => {
   const principal = {
@@ -16,6 +16,20 @@ test("buildPrincipalCalendars creates base and pubkey calendars", () => {
   assert.ok(ids.includes("nostr-issues"));
   assert.ok(ids.includes(`pubkey-${"a".repeat(12)}`));
   assert.ok(ids.includes("bugs"));
+});
+
+test("buildPrincipalCalendars creates one calendar per channel tag", () => {
+  const principal = {
+    username: "me@example.com",
+    password: "p",
+    pubkeys: ["a".repeat(64)],
+    calendars: []
+  };
+
+  const calendars = buildPrincipalCalendars(principal, [], { channelTags: ["ops", "frontend"] });
+  const ids = calendars.map((c) => c.id);
+  assert.ok(ids.includes("channel-ops"));
+  assert.ok(ids.includes("channel-frontend"));
 });
 
 test("issueVisibleInCalendar applies labels and status filters", () => {
@@ -40,4 +54,32 @@ test("issueVisibleInCalendar applies labels and status filters", () => {
     }),
     false
   );
+});
+
+test("issueVisibleToPrincipal allows mention to me and my own unmentioned tasks only", () => {
+  const principal = {
+    username: "me@example.com",
+    pubkeys: ["a".repeat(64)]
+  };
+
+  const mentioned = {
+    pubkey: "b".repeat(64),
+    mention_pubkeys: JSON.stringify(["a".repeat(64)]),
+    mention_handles: JSON.stringify([])
+  };
+  assert.equal(issueVisibleToPrincipal(mentioned, principal), true);
+
+  const mineNoMentions = {
+    pubkey: "a".repeat(64),
+    mention_pubkeys: JSON.stringify([]),
+    mention_handles: JSON.stringify([])
+  };
+  assert.equal(issueVisibleToPrincipal(mineNoMentions, principal), true);
+
+  const mineMentionsOther = {
+    pubkey: "a".repeat(64),
+    mention_pubkeys: JSON.stringify(["c".repeat(64)]),
+    mention_handles: JSON.stringify([])
+  };
+  assert.equal(issueVisibleToPrincipal(mineMentionsOther, principal), false);
 });

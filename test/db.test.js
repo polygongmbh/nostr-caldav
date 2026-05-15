@@ -74,3 +74,38 @@ test("comment events append content to issue body", () => {
 
   db.close();
 });
+
+test("issues persist channel and mention tags and support channel filtering", () => {
+  const db = openDb(mkDbPath());
+  const eventId = "7".repeat(64);
+  const author = "8".repeat(64);
+  const mentioned = "9".repeat(64);
+
+  db.upsertIssueFromNostr(
+    {
+      id: eventId,
+      pubkey: author,
+      created_at: 1710000000,
+      kind: 1621,
+      content: "body",
+      tags: [
+        ["subject", "Issue C"],
+        ["t", "ops"],
+        ["t", "backend"],
+        ["p", mentioned]
+      ]
+    },
+    "wss://relay.example"
+  );
+
+  const issue = db.getIssueByEventId(eventId);
+  assert.deepEqual(JSON.parse(issue.channel_tags), ["ops", "backend"]);
+  assert.deepEqual(JSON.parse(issue.mention_pubkeys), [mentioned]);
+  assert.deepEqual(db.listDistinctChannelTags(), ["backend", "ops"]);
+
+  const filtered = db.listIssuesFiltered({ tags: ["ops"] });
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].event_id, eventId);
+
+  db.close();
+});

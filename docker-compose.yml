@@ -8,4 +8,11 @@ services:
     volumes:
       - ./config.yaml:/data/config.yaml:ro
       - ./data:/data
+    networks:
+      - default
+      - noas
     restart: unless-stopped
+
+networks:
+  noas:
+    external: true

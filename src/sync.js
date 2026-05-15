@@ -33,10 +33,11 @@ export function createSyncService({ db, publisher }) {
       return published;
     },
 
-    async createIssueFromCaldav({ uid, summary, description, labels = [], status = "open" }, options = {}) {
+    async createIssueFromCaldav({ uid, summary, description, labels = [], channelTag = null, status = "open" }, options = {}) {
       const publishedIssue = await publisher.publishIssueCreate({
         summary,
         description,
+        channelTag,
         labels,
         signer: options.authContext?.signer || null
       });

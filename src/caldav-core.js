@@ -112,7 +112,7 @@ export async function processVtodoPut({ db, syncService, uid, ifMatch, body, aut
   };
 }
 
-export async function processVtodoCreate({ db, syncService, uid, body, authContext = null }) {
+export async function processVtodoCreate({ db, syncService, uid, body, channelTag = null, authContext = null }) {
   const existing = db.getIssueByUid(uid);
   if (existing) {
     return { status: 409, error: "UID already exists" };
@@ -139,6 +139,7 @@ export async function processVtodoCreate({ db, syncService, uid, body, authConte
       summary: summary || description.slice(0, 180),
       description,
       labels,
+      channelTag,
       status
     }, { authContext });
 

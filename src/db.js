@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS issues (
   subject         TEXT,
   body            TEXT,
   labels          TEXT,
+  channel_tags    TEXT,
+  mention_pubkeys TEXT,
+  mention_handles TEXT,
   created_at      INTEGER,
   status          TEXT DEFAULT 'open',
   caldav_uid      TEXT UNIQUE,
@@ -37,6 +40,13 @@ function nowUnix() {
   return Math.floor(Date.now() / 1000);
 }
 
+function ensureColumn(db, table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((entry) => entry.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
 function etagFor(eventId, sequence) {
   return `\"${eventId}-${sequence}\"`;
 }
@@ -47,6 +57,10 @@ function findFirstTag(tags, name) {
 
 function listTagValues(tags, name) {
   return (tags || []).filter((tag) => tag[0] === name).map((tag) => tag[1]);
+}
+
+function uniq(values) {
+  return Array.from(new Set((values || []).filter(Boolean)));
 }
 
 function findReferencedIssueId(tags) {
@@ -70,10 +84,14 @@ export function openDb(filePath) {
   const db = new Database(filePath);
   db.pragma("journal_mode = WAL");
   db.exec(SCHEMA);
+  ensureColumn(db, "issues", "channel_tags", "TEXT");
+  ensureColumn(db, "issues", "mention_pubkeys", "TEXT");
+  ensureColumn(db, "issues", "mention_handles", "TEXT");
 
   const getIssueByEventIdStmt = db.prepare("SELECT * FROM issues WHERE event_id = ?");
   const getIssueByUidStmt = db.prepare("SELECT * FROM issues WHERE caldav_uid = ?");
   const listIssuesStmt = db.prepare("SELECT * FROM issues ORDER BY created_at DESC");
+  const listDistinctChannelTagsStmt = db.prepare("SELECT channel_tags FROM issues");
   const listSyncLogStmt = db.prepare(
     "SELECT id, direction, event_id, action, timestamp, error FROM sync_log ORDER BY id DESC LIMIT ?"
   );
@@ -81,10 +99,12 @@ export function openDb(filePath) {
   const upsertIssueStmt = db.prepare(`
     INSERT INTO issues (
       event_id, pubkey, relay_url, subject, body, labels, created_at, status,
+      channel_tags, mention_pubkeys, mention_handles,
       caldav_uid, caldav_etag, sequence, last_modified, nostr_updated
     )
     VALUES (
       @event_id, @pubkey, @relay_url, @subject, @body, @labels, @created_at, @status,
+      @channel_tags, @mention_pubkeys, @mention_handles,
       @caldav_uid, @caldav_etag, @sequence, @last_modified, @nostr_updated
     )
     ON CONFLICT(event_id) DO UPDATE SET
@@ -92,6 +112,9 @@ export function openDb(filePath) {
       subject = excluded.subject,
       body = excluded.body,
       labels = excluded.labels,
+      channel_tags = excluded.channel_tags,
+      mention_pubkeys = excluded.mention_pubkeys,
+      mention_handles = excluded.mention_handles,
       status = excluded.status,
       caldav_etag = excluded.caldav_etag,
       sequence = excluded.sequence,
@@ -172,6 +195,17 @@ export function openDb(filePath) {
 
     const subject = deriveIssueSubject(event.tags, event.content);
     const labels = listTagValues(event.tags, "label");
+    const channelTags = uniq(listTagValues(event.tags, "t").map((value) => String(value || "").trim().toLowerCase()));
+    const mentionPubkeys = uniq(
+      listTagValues(event.tags, "p")
+        .map((value) => String(value || "").trim().toLowerCase())
+        .filter((value) => /^[0-9a-f]{64}$/.test(value))
+    );
+    const mentionHandles = uniq(
+      (event.tags || [])
+        .filter((tag) => tag[0] === "h" || tag[0] === "mention")
+        .map((tag) => String(tag[1] || "").trim().toLowerCase())
+    );
     const sequence = (existing?.sequence || 0) + 1;
     const caldavUid = existing?.caldav_uid || `${event.id}@nostr-issues`;
 
@@ -182,6 +216,9 @@ export function openDb(filePath) {
       subject,
       body: event.content || "",
       labels: JSON.stringify(labels),
+      channel_tags: JSON.stringify(channelTags),
+      mention_pubkeys: JSON.stringify(mentionPubkeys),
+      mention_handles: JSON.stringify(mentionHandles),
       created_at: event.created_at,
       status: existing?.status || "open",
       caldav_uid: caldavUid,
@@ -258,6 +295,9 @@ export function openDb(filePath) {
       subject: issue.subject,
       body,
       labels: issue.labels || "[]",
+      channel_tags: issue.channel_tags || "[]",
+      mention_pubkeys: issue.mention_pubkeys || "[]",
+      mention_handles: issue.mention_handles || "[]",
       created_at: issue.created_at,
       status: issue.status || "open",
       caldav_uid: issue.caldav_uid,
@@ -330,7 +370,7 @@ export function openDb(filePath) {
     };
   }
 
-  function listIssuesFiltered({ pubkeys, labels, statuses, text } = {}) {
+  function listIssuesFiltered({ pubkeys, labels, statuses, text, tags } = {}) {
     let query = "SELECT * FROM issues";
     const where = [];
     const params = {};
@@ -359,6 +399,14 @@ export function openDb(filePath) {
       });
     }
 
+    if (Array.isArray(tags) && tags.length > 0) {
+      const clauses = tags.map((_, idx) => `channel_tags LIKE @tag_${idx}`);
+      where.push(`(${clauses.join(" OR ")})`);
+      tags.forEach((tag, idx) => {
+        params[`tag_${idx}`] = `%\"${tag}\"%`;
+      });
+    }
+
     if (text) {
       where.push("(subject LIKE @text OR body LIKE @text)");
       params.text = `%${text}%`;
@@ -372,11 +420,40 @@ export function openDb(filePath) {
     return db.prepare(query).all(params);
   }
 
+  function listDistinctChannelTags() {
+    const out = new Set();
+    for (const row of listDistinctChannelTagsStmt.all()) {
+      let tags = [];
+      try {
+        tags = JSON.parse(row.channel_tags || "[]");
+      } catch {
+        tags = [];
+      }
+      for (const tag of tags) {
+        const value = String(tag || "").trim().toLowerCase();
+        if (value) out.add(value);
+      }
+    }
+    return Array.from(out).sort();
+  }
+
+  function listIssueEventIdsMissingChannelTags(limit = 1000) {
+    const n = Math.max(1, Math.min(Number(limit) || 1000, 10000));
+    const rows = db
+      .prepare(
+        "SELECT event_id FROM issues WHERE channel_tags IS NULL OR channel_tags = '' OR channel_tags = '[]' LIMIT ?"
+      )
+      .all(n);
+    return rows.map((row) => row.event_id);
+  }
+
   return {
     raw: db,
     getIssueByUid: (uid) => getIssueByUidStmt.get(uid),
     getIssueByEventId: (eventId) => getIssueByEventIdStmt.get(eventId),
     listIssues: () => listIssuesStmt.all(),
+    listDistinctChannelTags,
+    listIssueEventIdsMissingChannelTags,
     listSyncLog: (limit = 50) => {
       const n = Math.max(1, Math.min(Number(limit) || 50, 500));
       return listSyncLogStmt.all(n);

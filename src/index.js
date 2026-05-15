@@ -68,6 +68,24 @@ async function main() {
 
   subscriber.start();
 
+  const missingBefore = db.listIssueEventIdsMissingChannelTags(5000);
+  if (missingBefore.length > 0) {
+    console.log(`Backfill: refetching ${missingBefore.length} legacy issues to recover tag metadata`);
+    try {
+      const result = await subscriber.refetchIssuesByIds(missingBefore, {
+        chunkSize: 200,
+        timeoutMs: 12000
+      });
+      const missingAfter = db.listIssueEventIdsMissingChannelTags(5000).length;
+      const channelCount = db.listDistinctChannelTags().length;
+      console.log(
+        `Backfill complete: requested=${result.requested} chunks=${result.chunks} missing_after=${missingAfter} channels=${channelCount}`
+      );
+    } catch (error) {
+      console.error("Backfill failed", error);
+    }
+  }
+
   const app = createCaldavServer({
     db,
     caldavConfig: config.caldav,
