@@ -105,6 +105,20 @@ async function main() {
     }
   }
 
+  const parentCandidateIds = db.listIssueEventIds(5000);
+  if (parentCandidateIds.length > 0) {
+    console.log(`Backfill: refetching child tasks for ${parentCandidateIds.length} known parent candidates`);
+    try {
+      const result = await subscriber.refetchIssuesByParentIds(parentCandidateIds, {
+        chunkSize: 200,
+        timeoutMs: 12000
+      });
+      console.log(`Child task backfill complete: requested=${result.requested} chunks=${result.chunks}`);
+    } catch (error) {
+      console.error("Child task backfill failed", error);
+    }
+  }
+
   const app = createCaldavServer({
     db,
     caldavConfig: config.caldav,

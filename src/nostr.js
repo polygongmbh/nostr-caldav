@@ -183,6 +183,52 @@ export class NostrSubscriber {
 
     return { requested: ids.length, chunks: chunks.length };
   }
+
+  async refetchIssuesByParentIds(parentIds = [], options = {}) {
+    const ids = Array.from(
+      new Set(
+        (parentIds || [])
+          .map((value) => String(value || "").trim().toLowerCase())
+          .filter((value) => /^[0-9a-f]{64}$/.test(value))
+      )
+    );
+    if (ids.length === 0) return { requested: 0, chunks: 0 };
+
+    const chunkSize = Math.max(1, Math.min(Number(options.chunkSize) || 200, 500));
+    const timeoutMs = Math.max(1000, Math.min(Number(options.timeoutMs) || 10000, 60000));
+    const chunks = [];
+    for (let i = 0; i < ids.length; i += chunkSize) {
+      chunks.push(ids.slice(i, i + chunkSize));
+    }
+
+    const eventHandler = this.makeEventHandler();
+
+    for (const chunk of chunks) {
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          sub?.close?.();
+          resolve();
+        };
+
+        const timer = setTimeout(finish, timeoutMs);
+        const sub = this.pool.subscribeMany(
+          this.relays,
+          { kinds: [ISSUE_KIND], "#e": chunk },
+          {
+            onevent: eventHandler,
+            oneose: finish,
+            onclose: finish
+          }
+        );
+      });
+    }
+
+    return { requested: ids.length, chunks: chunks.length };
+  }
 }
 
 export function createNostrPublisher({ relays, signer, onauth }) {
