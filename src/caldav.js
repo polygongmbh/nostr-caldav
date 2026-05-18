@@ -96,9 +96,9 @@ function withPrincipalVisibility(issues, principal, db = null) {
 }
 
 function resolveChannelTags(db, principal) {
-  if (typeof db?.listIssues !== "function") return [];
+  if (typeof db?.listIssuesFiltered !== "function") return [];
   const tags = new Set();
-  const visible = withPrincipalVisibility(db.listIssues(), principal, db);
+  const visible = withPrincipalVisibility(db.listIssuesFiltered({}), principal, db);
   for (const issue of visible) {
     let channelTags = [];
     try {
@@ -114,6 +114,16 @@ function resolveChannelTags(db, principal) {
   const scoped = Array.from(tags).sort();
   if (scoped.length > 0) return scoped;
   return [];
+}
+
+function listVisibleIssuesForCalendar(db, principal, calendar) {
+  return withPrincipalVisibility(listIssuesForCalendar(db, calendar), principal, db);
+}
+
+function hideEmptyCalendars(db, principal, calendars) {
+  return (calendars || []).filter((calendar) =>
+    listVisibleIssuesForCalendar(db, principal, calendar).some((issue) => issue.status === "open")
+  );
 }
 
 function summarizeCalendars(calendars) {
@@ -321,16 +331,19 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
   app.get("/debug/calendars", (req, res) => {
     const principal = req.principal;
     const channelTags = resolveChannelTags(db, principal);
-    const calendars = buildPrincipalCalendars(principal, trackedPubkeys, {
+    const discoveredCalendars = buildPrincipalCalendars(principal, trackedPubkeys, {
       ...calendarOptions,
       channelTags
     });
+    const calendars = hideEmptyCalendars(db, principal, discoveredCalendars);
     const visibleCount = withPrincipalVisibility(db.listIssues(), principal, db).length;
     return res.status(200).json({
       generated_at: new Date().toISOString(),
       principal: principal?.username || null,
       principal_pubkey: principal?.pubkeys?.[0] || null,
       visible_issue_count: visibleCount,
+      discovered_calendar_count: discoveredCalendars.length,
+      visible_calendar_count: calendars.length,
       channel_tag_count: channelTags.length,
       sample_channel_tags: channelTags.slice(0, 50),
       calendars: summarizeCalendars(calendars)
@@ -347,10 +360,11 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     const principal = req.principal;
     const syncToken = db.getSyncToken();
     const normalizedPath = normalizeCollectionPath(req.path);
-    const calendars = buildPrincipalCalendars(principal, trackedPubkeys, {
+    const discoveredCalendars = buildPrincipalCalendars(principal, trackedPubkeys, {
       ...calendarOptions,
       channelTags: resolveChannelTags(db, principal)
     });
+    const calendars = hideEmptyCalendars(db, principal, discoveredCalendars);
     if (normalizedPath.match(/^\/calendars\/[^/]+$/)) {
       const summary = summarizeCalendars(calendars);
       console.log(
@@ -409,7 +423,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       return res.status(404).send("Not found");
     }
 
-    const baseIssues = withPrincipalVisibility(listIssuesForCalendar(db, calendar), principal, db);
+    const baseIssues = listVisibleIssuesForCalendar(db, principal, calendar);
     const report = req.method === "REPORT" ? runReportQuery({ issues: baseIssues, reportBody: req.body, syncToken }) : null;
     const depth = String(req.header("depth") || "1");
     const rows = depth === "0" && req.method === "PROPFIND" ? [] : report?.results || report?.issues || baseIssues;

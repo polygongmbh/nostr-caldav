@@ -87,20 +87,6 @@ export function findCalendarForPrincipal(principal, trackedPubkeys, calendarId, 
     };
   }
 
-  // Apple clients can keep previously discovered channel IDs and retry them later.
-  // Accept channel-* paths even if the current discovery set changed to avoid 404 loops.
-  if (String(calendarId || "").startsWith("channel-")) {
-    const tag = String(calendarId).slice("channel-".length).trim().toLowerCase();
-    if (tag) {
-      return {
-        id: calendarId,
-        name: `#${tag}`,
-        filter: { tags: [tag] },
-        channelTag: tag
-      };
-    }
-  }
-
   return null;
 }
 
