@@ -64,6 +64,10 @@ function uniq(values) {
   return Array.from(new Set((values || []).filter(Boolean)));
 }
 
+function normalizedText(value) {
+  return String(value || "");
+}
+
 function findReferencedIssueId(tags) {
   return findFirstTag(tags, "e");
 }
@@ -216,6 +220,28 @@ export function openDb(filePath) {
         .filter((tag) => tag[0] === "h" || tag[0] === "mention")
         .map((tag) => String(tag[1] || "").trim().toLowerCase())
     );
+    const body = normalizedText(event.content);
+    const labelsJson = JSON.stringify(labels);
+    const channelTagsJson = JSON.stringify(channelTags);
+    const mentionPubkeysJson = JSON.stringify(mentionPubkeys);
+    const mentionHandlesJson = JSON.stringify(mentionHandles);
+
+    if (existing) {
+      const samePayload =
+        normalizedText(existing.subject) === subject &&
+        normalizedText(existing.body) === body &&
+        normalizedText(existing.labels || "[]") === labelsJson &&
+        normalizedText(existing.channel_tags || "[]") === channelTagsJson &&
+        normalizedText(existing.mention_pubkeys || "[]") === mentionPubkeysJson &&
+        normalizedText(existing.mention_handles || "[]") === mentionHandlesJson &&
+        normalizedText(existing.parent_event_id) === normalizedText(parentEventId);
+
+      // Avoid ETag churn on duplicate refetches of the exact same event payload.
+      if (samePayload && Number(existing.nostr_updated || 0) >= Number(event.created_at || 0)) {
+        return { changed: false, reason: "duplicate_issue_event" };
+      }
+    }
+
     const sequence = (existing?.sequence || 0) + 1;
     const caldavUid = existing?.caldav_uid || `${event.id}@nostr-issues`;
 
@@ -224,11 +250,11 @@ export function openDb(filePath) {
       pubkey: event.pubkey,
       relay_url: relayUrl,
       subject,
-      body: event.content || "",
-      labels: JSON.stringify(labels),
-      channel_tags: JSON.stringify(channelTags),
-      mention_pubkeys: JSON.stringify(mentionPubkeys),
-      mention_handles: JSON.stringify(mentionHandles),
+      body,
+      labels: labelsJson,
+      channel_tags: channelTagsJson,
+      mention_pubkeys: mentionPubkeysJson,
+      mention_handles: mentionHandlesJson,
       parent_event_id: parentEventId,
       created_at: event.created_at,
       status: existing?.status || "open",

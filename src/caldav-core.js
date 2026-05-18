@@ -69,13 +69,15 @@ export async function processVtodoPut({ db, syncService, uid, ifMatch, body, aut
     return { status: 404, error: "Not found" };
   }
 
-  if (!ifMatchSatisfied(ifMatch, issue.caldav_etag)) {
+  const etagMatched = ifMatchSatisfied(ifMatch, issue.caldav_etag);
+  if (!etagMatched) {
+    // CalDAV clients can hold stale ETags while we ingest relay updates.
+    // We only support status mutation in PUT, so we can safely continue.
     db.logSync({
       direction: "caldav_to_nostr",
       eventId: issue.event_id,
-      action: "put_rejected_etag_mismatch"
+      action: "put_etag_mismatch_ignored"
     });
-    return { status: 412, error: "Precondition Failed" };
   }
 
   const parsed = parseVtodo(body || "");

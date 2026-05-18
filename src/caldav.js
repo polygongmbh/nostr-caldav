@@ -418,7 +418,10 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     }
 
     const calendarId = decodePathSegment(collectionMatch[2]);
-    const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, calendarOptions);
+    const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, {
+      ...calendarOptions,
+      channelTags: resolveChannelTags(db, principal)
+    });
     if (!calendar) {
       return res.status(404).send("Not found");
     }
