@@ -32,7 +32,6 @@ function normalizeHandle(value) {
 
 export function buildPrincipalCalendars(principal, trackedPubkeys, options = {}) {
   const principalPubkeys = Array.isArray(principal.pubkeys) ? principal.pubkeys : [];
-  const baseFilter = {};
   const includeAutoPubkeyCalendars = options.includeAutoPubkeyCalendars !== false;
   const channelTags = Array.isArray(options.channelTags) ? options.channelTags : [];
 
@@ -62,18 +61,12 @@ export function buildPrincipalCalendars(principal, trackedPubkeys, options = {})
     id: `channel-${sanitizeId(tag)}`,
     name: `#${tag}`,
     filter: {
-      ...baseFilter,
       tags: [tag]
     },
     channelTag: tag
   }));
 
   return uniqueById([
-    {
-      id: "nostr-issues",
-      name: "Your Issues",
-      filter: baseFilter
-    },
     ...channelCalendars,
     ...autoPubkeyCalendars,
     ...configuredCalendars
@@ -84,6 +77,15 @@ export function findCalendarForPrincipal(principal, trackedPubkeys, calendarId, 
   const calendars = buildPrincipalCalendars(principal, trackedPubkeys, options);
   const found = calendars.find((cal) => cal.id === calendarId);
   if (found) return found;
+
+  // Compatibility fallback for clients with cached legacy calendar IDs.
+  if (calendarId === "nostr-issues") {
+    return {
+      id: "nostr-issues",
+      name: "Your Issues (Legacy)",
+      filter: {}
+    };
+  }
 
   // Apple clients can keep previously discovered channel IDs and retry them later.
   // Accept channel-* paths even if the current discovery set changed to avoid 404 loops.
