@@ -135,6 +135,7 @@ export function issueVisibleToPrincipal(issue, principal, options = {}) {
 
   if (mentionsMe) return true;
   if (createdByMe && !hasAnyMentions) return true;
+  if (hasAnyMentions) return false;
 
   const parentId = String(issue?.parent_event_id || "").trim();
   const seen = options.seen instanceof Set ? options.seen : new Set();
