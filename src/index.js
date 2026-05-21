@@ -49,6 +49,8 @@ async function main() {
 
   const syncService = createSyncService({ db, publisher });
   const since = unixNow() - config.sync.lookbackDays * 24 * 60 * 60;
+  const authCatchupWindowDays = 365;
+  const authCatchupSince = unixNow() - authCatchupWindowDays * 24 * 60 * 60;
 
   subscriber = new NostrSubscriber({
     relays: config.nostr.relays,
@@ -119,6 +121,42 @@ async function main() {
     }
   }
 
+  async function runUserCatchup(pubkey) {
+    const markerKey = `user_catchup_v2:${pubkey}`;
+    if (db.getConfigValue(markerKey) === "complete") return;
+
+    try {
+      console.log(`Catch-up: refetching authored issues for ${pubkey.slice(0, 12)} since ${authCatchupSince}`);
+      const authored = await subscriber.refetchIssuesByAuthors([pubkey], {
+        chunkSize: 50,
+        timeoutMs: 12000,
+        since: authCatchupSince
+      });
+      console.log(`Catch-up: authored requested=${authored.requested} chunks=${authored.chunks}`);
+
+      console.log(`Catch-up: refetching assigned issues for ${pubkey.slice(0, 12)} since ${authCatchupSince}`);
+      const assigned = await subscriber.refetchIssuesByMentionPubkeys([pubkey], {
+        chunkSize: 50,
+        timeoutMs: 12000,
+        since: authCatchupSince
+      });
+      console.log(`Catch-up: assigned requested=${assigned.requested} chunks=${assigned.chunks}`);
+
+      const parentIds = db.listIssueEventIds(10000);
+      if (parentIds.length > 0) {
+        const children = await subscriber.refetchIssuesByParentIds(parentIds, {
+          chunkSize: 200,
+          timeoutMs: 12000
+        });
+        console.log(`Catch-up: child-refetch requested=${children.requested} chunks=${children.chunks}`);
+      }
+
+      db.setConfigValue(markerKey, "complete");
+    } catch (error) {
+      console.error(`Catch-up failed for ${pubkey.slice(0, 12)}`, error);
+    }
+  }
+
   const app = createCaldavServer({
     db,
     caldavConfig: config.caldav,
@@ -134,6 +172,9 @@ async function main() {
       }
       if (subscriber) {
         subscriber.addAuthor(normalized, authContext.signer || null);
+        runUserCatchup(normalized).catch((error) => {
+          console.error("Background catch-up error", error);
+        });
       }
     }
   });

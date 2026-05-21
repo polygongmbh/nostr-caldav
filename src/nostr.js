@@ -229,6 +229,96 @@ export class NostrSubscriber {
 
     return { requested: ids.length, chunks: chunks.length };
   }
+
+  async refetchIssuesByAuthors(pubkeys = [], options = {}) {
+    const authors = Array.from(
+      new Set(
+        (pubkeys || [])
+          .map((value) => String(value || "").trim().toLowerCase())
+          .filter((value) => /^[0-9a-f]{64}$/.test(value))
+      )
+    );
+    if (authors.length === 0) return { requested: 0, chunks: 0 };
+
+    const chunkSize = Math.max(1, Math.min(Number(options.chunkSize) || 50, 200));
+    const timeoutMs = Math.max(1000, Math.min(Number(options.timeoutMs) || 10000, 60000));
+    const since = Number.isFinite(Number(options.since)) ? Number(options.since) : undefined;
+    const chunks = [];
+    for (let i = 0; i < authors.length; i += chunkSize) {
+      chunks.push(authors.slice(i, i + chunkSize));
+    }
+
+    const eventHandler = this.makeEventHandler();
+
+    for (const chunk of chunks) {
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          sub?.close?.();
+          resolve();
+        };
+
+        const timer = setTimeout(finish, timeoutMs);
+        const filter = { kinds: [ISSUE_KIND], authors: chunk };
+        if (typeof since === "number") filter.since = since;
+        const sub = this.pool.subscribeMany(this.relays, filter, {
+          onevent: eventHandler,
+          oneose: finish,
+          onclose: finish
+        });
+      });
+    }
+
+    return { requested: authors.length, chunks: chunks.length };
+  }
+
+  async refetchIssuesByMentionPubkeys(pubkeys = [], options = {}) {
+    const mentions = Array.from(
+      new Set(
+        (pubkeys || [])
+          .map((value) => String(value || "").trim().toLowerCase())
+          .filter((value) => /^[0-9a-f]{64}$/.test(value))
+      )
+    );
+    if (mentions.length === 0) return { requested: 0, chunks: 0 };
+
+    const chunkSize = Math.max(1, Math.min(Number(options.chunkSize) || 50, 200));
+    const timeoutMs = Math.max(1000, Math.min(Number(options.timeoutMs) || 10000, 60000));
+    const since = Number.isFinite(Number(options.since)) ? Number(options.since) : undefined;
+    const chunks = [];
+    for (let i = 0; i < mentions.length; i += chunkSize) {
+      chunks.push(mentions.slice(i, i + chunkSize));
+    }
+
+    const eventHandler = this.makeEventHandler();
+
+    for (const chunk of chunks) {
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          sub?.close?.();
+          resolve();
+        };
+
+        const timer = setTimeout(finish, timeoutMs);
+        const filter = { kinds: [ISSUE_KIND], "#p": chunk };
+        if (typeof since === "number") filter.since = since;
+        const sub = this.pool.subscribeMany(this.relays, filter, {
+          onevent: eventHandler,
+          oneose: finish,
+          onclose: finish
+        });
+      });
+    }
+
+    return { requested: mentions.length, chunks: chunks.length };
+  }
 }
 
 export function createNostrPublisher({ relays, signer, onauth }) {
