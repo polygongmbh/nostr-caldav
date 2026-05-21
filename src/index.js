@@ -121,6 +121,21 @@ async function main() {
     }
   }
 
+  const statusBackfillIssueIds = db.listIssueEventIds(10000);
+  if (statusBackfillIssueIds.length > 0) {
+    console.log(`Backfill: refetching status events for ${statusBackfillIssueIds.length} known issues`);
+    try {
+      const result = await subscriber.refetchStatusEventsByIssueIds(statusBackfillIssueIds, {
+        chunkSize: 200,
+        timeoutMs: 12000,
+        since
+      });
+      console.log(`Status backfill complete: requested=${result.requested} chunks=${result.chunks}`);
+    } catch (error) {
+      console.error("Status backfill failed", error);
+    }
+  }
+
   async function runUserCatchup(pubkey) {
     const markerKey = `user_catchup_v2:${pubkey}`;
     if (db.getConfigValue(markerKey) === "complete") return;
@@ -149,6 +164,13 @@ async function main() {
           timeoutMs: 12000
         });
         console.log(`Catch-up: child-refetch requested=${children.requested} chunks=${children.chunks}`);
+
+        const statuses = await subscriber.refetchStatusEventsByIssueIds(parentIds, {
+          chunkSize: 200,
+          timeoutMs: 12000,
+          since: authCatchupSince
+        });
+        console.log(`Catch-up: status-refetch requested=${statuses.requested} chunks=${statuses.chunks}`);
       }
 
       db.setConfigValue(markerKey, "complete");
