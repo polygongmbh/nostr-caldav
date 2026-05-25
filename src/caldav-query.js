@@ -1,4 +1,5 @@
 import { parseVtodo } from "./ics.js";
+import { toVtodoFromInternal } from "./status.js";
 
 function extractTagContent(xml, tagName) {
   const re = new RegExp(`<[^>]*${tagName}[^>]*>([\\s\\S]*?)<\\/[^>]*${tagName}>`, "i");
@@ -111,7 +112,7 @@ function issuePropValue(issue, propName) {
     case "UID":
       return issue.caldav_uid;
     case "STATUS":
-      return issue.status;
+      return toVtodoFromInternal(issue.status);
     case "SUMMARY":
       return issue.subject;
     case "DESCRIPTION":

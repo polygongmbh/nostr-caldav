@@ -195,6 +195,53 @@ test("calendar-query filters by SUMMARY text-match", () => {
   db.close();
 });
 
+test("calendar-query STATUS filter treats cancelled as COMPLETED for Apple-facing output", () => {
+  const db = openDb(mkDbPath());
+  const eventId = "f".repeat(64);
+  db.upsertIssueFromNostr(
+    {
+      id: eventId,
+      pubkey: "e".repeat(64),
+      created_at: 1710000900,
+      kind: 1621,
+      content: "Closed task",
+      tags: [["subject", "Closed item"]]
+    },
+    "wss://relay.example"
+  );
+  db.applyStatusEventFromNostr({
+    id: "1".repeat(64),
+    kind: 1632,
+    created_at: 1710000901,
+    tags: [["e", eventId]],
+    content: ""
+  });
+
+  const report = runReportQuery({
+    issues: db.listIssues(),
+    syncToken: db.getSyncToken(),
+    reportBody: `<?xml version="1.0" encoding="UTF-8"?>
+<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop><d:getetag/><c:calendar-data/></d:prop>
+  <c:filter>
+    <c:comp-filter name="VCALENDAR">
+      <c:comp-filter name="VTODO">
+        <c:prop-filter name="STATUS">
+          <c:text-match match-type="equals">COMPLETED</c:text-match>
+        </c:prop-filter>
+      </c:comp-filter>
+    </c:comp-filter>
+  </c:filter>
+</c:calendar-query>`
+  });
+
+  assert.equal(report.type, "calendar-query");
+  assert.equal(report.results.length, 1);
+  assert.equal(report.results[0].issue.event_id, eventId);
+
+  db.close();
+});
+
 test("CalDAV PUT create integration publishes kind 1621 and stores UID mapping", async () => {
   const db = openDb(mkDbPath());
   const published = [];

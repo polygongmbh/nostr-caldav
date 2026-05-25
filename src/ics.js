@@ -108,6 +108,7 @@ export function issueToVtodo(issue) {
   const labels = JSON.parse(issue.labels || "[]");
   const created = toUtcStamp(issue.created_at || issue.last_modified);
   const modified = toUtcStamp(issue.last_modified || issue.created_at);
+  const isClosed = issue.status === "completed" || issue.status === "cancelled";
   const nevent = nip19.neventEncode({ id: issue.event_id, author: issue.pubkey });
   const url = `nostr:${nevent}`;
 
@@ -128,6 +129,12 @@ export function issueToVtodo(issue) {
     `ORGANIZER;CN=${escapeIcs(issue.pubkey)}:mailto:noreply@nostr.local`,
     `URL:${escapeIcs(url)}`
   ];
+
+  if (isClosed) {
+    // Apple Reminders is more reliable when closed tasks include explicit completion markers.
+    lines.push(`COMPLETED:${modified}`);
+    lines.push("PERCENT-COMPLETE:100");
+  }
 
   if (labels.length > 0) {
     lines.push(`CATEGORIES:${labels.map((l) => escapeIcs(l)).join(",")}`);

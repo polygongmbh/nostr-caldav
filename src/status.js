@@ -11,7 +11,8 @@ export const STATUS_KIND_TO_INTERNAL = {
 export const INTERNAL_TO_VTODO_STATUS = {
   open: "NEEDS-ACTION",
   completed: "COMPLETED",
-  cancelled: "CANCELLED",
+  // Apple Reminders handles COMPLETED more reliably than CANCELLED for hiding closed tasks.
+  cancelled: "COMPLETED",
   draft: "IN-PROCESS"
 };
 
