@@ -1,5 +1,7 @@
 export const ISSUE_KIND = 1621;
 export const COMMENT_KIND = 1622;
+export const CALENDAR_EVENT_DATE_KIND = 31922;
+export const CALENDAR_EVENT_TIME_KIND = 31923;
 
 export const STATUS_KIND_TO_INTERNAL = {
   1630: "open",
