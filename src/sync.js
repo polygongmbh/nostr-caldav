@@ -12,6 +12,10 @@ export function createSyncService({ db, publisher }) {
       db.applyCommentEventFromNostr(commentEvent);
     },
 
+    onCalendarEvent(event, relayUrl) {
+      db.upsertCalendarEventFromNostr(event, relayUrl);
+    },
+
     async publishStatusFromCaldav(issueEventId, status, options = {}) {
       const published = await publisher.publishStatusChange({ issueEventId, status, signer: options.authContext?.signer || null });
       if (published.skipped) {
