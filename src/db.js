@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { statusKindToInternal } from "./status.js";
+import { statusKindToInternal, CALENDAR_EVENT_DATE_KIND } from "./status.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS issues (
@@ -35,6 +35,33 @@ CREATE TABLE IF NOT EXISTS config (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS calendar_events (
+  event_id      TEXT PRIMARY KEY,
+  pubkey        TEXT NOT NULL,
+  kind          INTEGER NOT NULL,
+  relay_url     TEXT,
+  d_tag         TEXT NOT NULL DEFAULT '',
+  title         TEXT,
+  description   TEXT,
+  start_at      INTEGER,
+  end_at        INTEGER,
+  start_date    TEXT,
+  end_date      TEXT,
+  start_tzid    TEXT,
+  end_tzid      TEXT,
+  location      TEXT,
+  is_all_day    INTEGER NOT NULL DEFAULT 0,
+  labels        TEXT,
+  created_at    INTEGER,
+  caldav_uid    TEXT UNIQUE,
+  caldav_etag   TEXT,
+  sequence      INTEGER DEFAULT 0,
+  last_modified INTEGER,
+  nostr_updated INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cal_events_addr ON calendar_events (pubkey, kind, d_tag);
 `;
 
 function nowUnix() {
@@ -458,6 +485,140 @@ export function openDb(filePath) {
     return db.prepare(query).all(params);
   }
 
+  function upsertCalendarEventFromNostr(event, relayUrl) {
+    const dTag = findFirstTag(event.tags, "d") || "";
+    const titleTag = findFirstTag(event.tags, "title");
+    const startTag = findFirstTag(event.tags, "start");
+    const endTag = findFirstTag(event.tags, "end");
+    const startTzid = findFirstTag(event.tags, "start_tzid");
+    const endTzid = findFirstTag(event.tags, "end_tzid");
+    const location = findFirstTag(event.tags, "location");
+    const labels = uniq(listTagValues(event.tags, "t").map((v) => String(v || "").trim().toLowerCase()));
+
+    const isAllDay = event.kind === CALENDAR_EVENT_DATE_KIND ? 1 : 0;
+    const startAt = isAllDay ? null : (startTag ? Number(startTag) : null);
+    const endAt = isAllDay ? null : (endTag ? Number(endTag) : null);
+    const startDate = isAllDay ? (startTag || null) : null;
+    const endDate = isAllDay ? (endTag || null) : null;
+
+    const title = titleTag || deriveIssueSubject(event.tags, event.content);
+    const description = normalizedText(event.content);
+
+    const existing = db.prepare(
+      "SELECT * FROM calendar_events WHERE pubkey = ? AND kind = ? AND d_tag = ?"
+    ).get(event.pubkey, event.kind, dTag);
+
+    if (existing && (existing.nostr_updated || 0) >= (event.created_at || 0)) {
+      return { changed: false, reason: "stale_calendar_event" };
+    }
+
+    const sequence = (existing?.sequence || 0) + 1;
+    const caldavUid = existing?.caldav_uid || `${event.id}@nostr-calendar`;
+
+    if (existing) {
+      db.prepare(`
+        UPDATE calendar_events SET
+          event_id = @event_id, relay_url = @relay_url,
+          title = @title, description = @description,
+          start_at = @start_at, end_at = @end_at,
+          start_date = @start_date, end_date = @end_date,
+          start_tzid = @start_tzid, end_tzid = @end_tzid,
+          location = @location, labels = @labels,
+          caldav_etag = @caldav_etag, sequence = @sequence,
+          last_modified = @last_modified, nostr_updated = @nostr_updated
+        WHERE pubkey = @pubkey AND kind = @kind AND d_tag = @d_tag
+      `).run({
+        event_id: event.id,
+        relay_url: relayUrl,
+        title, description,
+        start_at: startAt, end_at: endAt,
+        start_date: startDate, end_date: endDate,
+        start_tzid: startTzid, end_tzid: endTzid,
+        location,
+        labels: JSON.stringify(labels),
+        caldav_etag: etagFor(event.id, sequence),
+        sequence,
+        last_modified: nowUnix(),
+        nostr_updated: event.created_at,
+        pubkey: event.pubkey,
+        kind: event.kind,
+        d_tag: dTag
+      });
+    } else {
+      db.prepare(`
+        INSERT INTO calendar_events (
+          event_id, pubkey, kind, relay_url, d_tag,
+          title, description,
+          start_at, end_at, start_date, end_date,
+          start_tzid, end_tzid, location, is_all_day, labels,
+          created_at, caldav_uid, caldav_etag, sequence, last_modified, nostr_updated
+        ) VALUES (
+          @event_id, @pubkey, @kind, @relay_url, @d_tag,
+          @title, @description,
+          @start_at, @end_at, @start_date, @end_date,
+          @start_tzid, @end_tzid, @location, @is_all_day, @labels,
+          @created_at, @caldav_uid, @caldav_etag, @sequence, @last_modified, @nostr_updated
+        )
+      `).run({
+        event_id: event.id,
+        pubkey: event.pubkey,
+        kind: event.kind,
+        relay_url: relayUrl,
+        d_tag: dTag,
+        title, description,
+        start_at: startAt, end_at: endAt,
+        start_date: startDate, end_date: endDate,
+        start_tzid: startTzid, end_tzid: endTzid,
+        location,
+        is_all_day: isAllDay,
+        labels: JSON.stringify(labels),
+        created_at: event.created_at,
+        caldav_uid: caldavUid,
+        caldav_etag: etagFor(event.id, sequence),
+        sequence,
+        last_modified: nowUnix(),
+        nostr_updated: event.created_at
+      });
+    }
+
+    bumpSyncToken();
+    logSync({ direction: "nostr_to_caldav", eventId: event.id, action: "upsert_calendar_event" });
+    return { changed: true, eventId: event.id };
+  }
+
+  function getCalendarEventByUid(uid) {
+    return db.prepare("SELECT * FROM calendar_events WHERE caldav_uid = ?").get(uid);
+  }
+
+  function getCalendarEventByEventId(eventId) {
+    return db.prepare("SELECT * FROM calendar_events WHERE event_id = ?").get(eventId);
+  }
+
+  function listCalendarEventsFiltered({ pubkeys, tags } = {}) {
+    let query = "SELECT * FROM calendar_events";
+    const where = [];
+    const params = {};
+
+    if (Array.isArray(pubkeys) && pubkeys.length > 0) {
+      const names = pubkeys.map((_, idx) => `pubkey_${idx}`);
+      where.push(`pubkey IN (${names.map((n) => `@${n}`).join(",")})`);
+      names.forEach((name, idx) => { params[name] = pubkeys[idx]; });
+    }
+
+    if (Array.isArray(tags) && tags.length > 0) {
+      const clauses = tags.map((_, idx) => `labels LIKE @tag_${idx}`);
+      where.push(`(${clauses.join(" OR ")})`);
+      tags.forEach((tag, idx) => { params[`tag_${idx}`] = `%"${tag}"%`; });
+    }
+
+    if (where.length > 0) {
+      query += ` WHERE ${where.join(" AND ")}`;
+    }
+
+    query += " ORDER BY COALESCE(start_at, 0) DESC, start_date DESC";
+    return db.prepare(query).all(params);
+  }
+
   function listDistinctChannelTags() {
     const out = new Set();
     for (const row of listDistinctChannelTagsStmt.all()) {
@@ -473,6 +634,14 @@ export function openDb(filePath) {
       }
     }
     return Array.from(out).sort();
+  }
+
+  function listDistinctIssuePubkeys() {
+    return db.prepare("SELECT DISTINCT pubkey FROM issues WHERE pubkey IS NOT NULL").all().map((r) => r.pubkey);
+  }
+
+  function listDistinctCalendarEventPubkeys() {
+    return db.prepare("SELECT DISTINCT pubkey FROM calendar_events WHERE pubkey IS NOT NULL").all().map((r) => r.pubkey);
   }
 
   function listIssueEventIdsMissingChannelTags(limit = 1000) {
@@ -498,6 +667,8 @@ export function openDb(filePath) {
     issueHasSubtasks: (eventId) => Boolean(issueHasSubtasksStmt.get(eventId)),
     listIssues: () => listIssuesStmt.all(),
     listDistinctChannelTags,
+    listDistinctIssuePubkeys,
+    listDistinctCalendarEventPubkeys,
     listIssueEventIdsMissingChannelTags,
     listIssueEventIds,
     listSyncLog: (limit = 50) => {
@@ -513,6 +684,10 @@ export function openDb(filePath) {
     applyCommentEventFromNostr,
     updateStatusFromCaldav,
     setIssueUidFromCaldav,
+    upsertCalendarEventFromNostr,
+    getCalendarEventByUid,
+    getCalendarEventByEventId,
+    listCalendarEventsFiltered,
     bumpSyncToken,
     logSync,
     close: () => db.close()
