@@ -1,13 +1,13 @@
 import { SimplePool, useWebSocketImplementation } from "nostr-tools/pool";
 import WebSocket from "ws";
-import { COMMENT_KIND, internalStatusToKind, ISSUE_KIND } from "./status.js";
+import { CALENDAR_EVENT_DATE_KIND, CALENDAR_EVENT_TIME_KIND, COMMENT_KIND, internalStatusToKind, ISSUE_KIND } from "./status.js";
 
 function getEventRefId(tags) {
   return (tags || []).find((t) => t[0] === "e")?.[1] || null;
 }
 
 export class NostrSubscriber {
-  constructor({ relays, authors, since, onIssue, onStatus, onComment, onauth }) {
+  constructor({ relays, authors, since, onIssue, onStatus, onComment, onCalendarEvent, onauth }) {
     useWebSocketImplementation(WebSocket);
     this.pool = new SimplePool();
     this.relays = relays;
@@ -16,6 +16,7 @@ export class NostrSubscriber {
     this.onIssue = onIssue;
     this.onStatus = onStatus;
     this.onComment = onComment;
+    this.onCalendarEvent = onCalendarEvent;
     this.onauth = onauth;
     this.seen = new Set();
     this.authorSigners = new Map();
@@ -40,6 +41,11 @@ export class NostrSubscriber {
       if (event.kind === COMMENT_KIND) {
         const issueId = getEventRefId(event.tags);
         this.onComment(event, issueId);
+        return;
+      }
+
+      if (event.kind === CALENDAR_EVENT_DATE_KIND || event.kind === CALENDAR_EVENT_TIME_KIND) {
+        if (this.onCalendarEvent) this.onCalendarEvent(event);
       }
     };
   }
@@ -83,6 +89,15 @@ export class NostrSubscriber {
         this.relays,
         {
           kinds: [COMMENT_KIND],
+          since: this.since,
+          authors: [pubkey]
+        },
+        makeParams()
+      ),
+      this.pool.subscribeMany(
+        this.relays,
+        {
+          kinds: [CALENDAR_EVENT_DATE_KIND, CALENDAR_EVENT_TIME_KIND],
           since: this.since,
           authors: [pubkey]
         },
@@ -228,6 +243,51 @@ export class NostrSubscriber {
     }
 
     return { requested: ids.length, chunks: chunks.length };
+  }
+
+  async refetchCalendarEventsByAuthors(pubkeys = [], options = {}) {
+    const authors = Array.from(
+      new Set(
+        (pubkeys || [])
+          .map((value) => String(value || "").trim().toLowerCase())
+          .filter((value) => /^[0-9a-f]{64}$/.test(value))
+      )
+    );
+    if (authors.length === 0) return { requested: 0, chunks: 0 };
+
+    const chunkSize = Math.max(1, Math.min(Number(options.chunkSize) || 50, 200));
+    const timeoutMs = Math.max(1000, Math.min(Number(options.timeoutMs) || 10000, 60000));
+    const since = Number.isFinite(Number(options.since)) ? Number(options.since) : undefined;
+    const chunks = [];
+    for (let i = 0; i < authors.length; i += chunkSize) {
+      chunks.push(authors.slice(i, i + chunkSize));
+    }
+
+    const eventHandler = this.makeEventHandler();
+
+    for (const chunk of chunks) {
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          sub?.close?.();
+          resolve();
+        };
+
+        const timer = setTimeout(finish, timeoutMs);
+        const filter = { kinds: [CALENDAR_EVENT_DATE_KIND, CALENDAR_EVENT_TIME_KIND], authors: chunk };
+        if (typeof since === "number") filter.since = since;
+        const sub = this.pool.subscribeMany(this.relays, filter, {
+          onevent: eventHandler,
+          oneose: finish,
+          onclose: finish
+        });
+      });
+    }
+
+    return { requested: authors.length, chunks: chunks.length };
   }
 
   async refetchIssuesByAuthors(pubkeys = [], options = {}) {
