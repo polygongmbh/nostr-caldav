@@ -4,6 +4,8 @@ import {
   extractRequestedProps,
   extractSyncToken,
   filterIssuesByCalendarQuery,
+  filterCalendarEventsByCalendarQuery,
+  containsVeventFilter,
   projectCalendarData
 } from "./caldav-query.js";
 
@@ -31,31 +33,32 @@ export function selectIssuesForSync({ currentToken, requestedToken, issues }) {
   return issues;
 }
 
-export function runReportQuery({ issues, reportBody, syncToken }) {
+export function runReportQuery({ issues, calendarEvents = [], reportBody, syncToken }) {
   const type = detectReportType(reportBody);
 
   if (type === "sync-collection") {
     const requestedToken = extractSyncToken(reportBody);
-    return {
-      type,
-      issues: selectIssuesForSync({ currentToken: syncToken, requestedToken, issues })
-    };
+    const filteredIssues = selectIssuesForSync({ currentToken: syncToken, requestedToken, issues });
+    const filteredCalEvents = requestedToken && requestedToken >= syncToken ? [] : calendarEvents;
+    return { type, issues: filteredIssues, calendarEvents: filteredCalEvents };
   }
 
   if (type === "calendar-query") {
-    const filtered = filterIssuesByCalendarQuery(issues, reportBody);
+    const wantsVevent = containsVeventFilter(reportBody);
+    const wantsVtodo = !wantsVevent;
     const requestedProps = extractRequestedProps(reportBody);
-    const projected = filtered.map((issue) => ({
-      issue,
-      projection: projectCalendarData(issue, requestedProps)
-    }));
-    return { type, results: projected };
+
+    const filteredIssues = wantsVtodo ? filterIssuesByCalendarQuery(issues, reportBody) : [];
+    const filteredCalEvents = wantsVevent ? filterCalendarEventsByCalendarQuery(calendarEvents, reportBody) : [];
+
+    const results = [
+      ...filteredIssues.map((issue) => ({ issue, projection: projectCalendarData(issue, requestedProps) })),
+      ...filteredCalEvents.map((calEvent) => ({ calendarEvent: calEvent, projection: projectCalendarData(calEvent, requestedProps) }))
+    ];
+    return { type, results };
   }
 
-  return {
-    type,
-    issues
-  };
+  return { type, issues, calendarEvents };
 }
 
 export async function processVtodoPut({ db, syncService, uid, ifMatch, body, authContext = null }) {

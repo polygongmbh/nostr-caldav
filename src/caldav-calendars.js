@@ -94,6 +94,15 @@ export function listIssuesForCalendar(db, calendar) {
   return db.listIssuesFiltered(calendar?.filter || {});
 }
 
+export function listCalendarEventsForCalendar(db, calendar) {
+  if (typeof db?.listCalendarEventsFiltered !== "function") return [];
+  return db.listCalendarEventsFiltered(calendar?.filter || {});
+}
+
+export function calendarEventVisibleToPrincipal(_calEvent, _principal) {
+  return true;
+}
+
 export function issueVisibleInCalendar(issue, calendar) {
   const filter = calendar?.filter || {};
 

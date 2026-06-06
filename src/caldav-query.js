@@ -27,6 +27,14 @@ function containsComponentFilter(xml) {
   return /<[^>]*comp-filter[^>]*name="VTODO"/i.test(String(xml || ""));
 }
 
+function containsVeventFilter(xml) {
+  return /<[^>]*comp-filter[^>]*name="VEVENT"/i.test(String(xml || ""));
+}
+
+function hasAnyComponentFilter(xml) {
+  return containsComponentFilter(xml) || containsVeventFilter(xml);
+}
+
 function parseTextMatchModes(fragment) {
   const textMatches = [];
   const re = /<[^>]*text-match([^>]*)>([\s\S]*?)<\/[^>]*text-match>/gi;
@@ -159,6 +167,8 @@ export function extractSyncToken(xml) {
   return Number.isFinite(token) ? token : null;
 }
 
+export { containsVeventFilter };
+
 export function filterIssuesByCalendarQuery(issues, reportBody) {
   const xml = String(reportBody || "");
 
@@ -225,4 +235,47 @@ export function projectCalendarData(issue, requestedProps) {
 export function extractStatusFromIcs(icsBody) {
   const parsed = parseVtodo(icsBody);
   return parsed.internalStatus;
+}
+
+export function filterCalendarEventsByCalendarQuery(calendarEvents, reportBody) {
+  const xml = String(reportBody || "");
+
+  if (!containsVeventFilter(xml)) {
+    return [];
+  }
+
+  const propFilters = parsePropertyFilters(xml);
+  if (propFilters.length === 0) {
+    return calendarEvents;
+  }
+
+  return calendarEvents.filter((calEvent) => {
+    for (const filter of propFilters) {
+      let propValue = "";
+      switch (filter.name) {
+        case "UID": propValue = calEvent.caldav_uid; break;
+        case "SUMMARY": propValue = calEvent.title; break;
+        case "DESCRIPTION": propValue = calEvent.description; break;
+        case "CATEGORIES": propValue = calEvent.labels || ""; break;
+        default: propValue = "";
+      }
+      const hasValue = propValue !== null && propValue !== undefined && String(propValue).length > 0;
+
+      if (filter.isNotDefined && hasValue) return false;
+
+      if (filter.timeRange) {
+        const rangeStart = toEpochFromIcal(filter.timeRange.start);
+        const rangeEnd = toEpochFromIcal(filter.timeRange.end);
+        const stamp = calEvent.start_at || calEvent.last_modified || calEvent.created_at || 0;
+        if (rangeStart !== null && stamp < rangeStart) return false;
+        if (rangeEnd !== null && stamp >= rangeEnd) return false;
+      }
+
+      if (filter.textMatches.length > 0) {
+        const ok = filter.textMatches.every((tm) => matchText(propValue, tm));
+        if (!ok) return false;
+      }
+    }
+    return true;
+  });
 }

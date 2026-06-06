@@ -1,13 +1,15 @@
 import express from "express";
 import morgan from "morgan";
-import { issueToVtodo } from "./ics.js";
+import { issueToVtodo, calendarEventToVevent } from "./ics.js";
 import { processVtodoCreate, processVtodoPut, runReportQuery } from "./caldav-core.js";
 import {
   buildPrincipalCalendars,
   findCalendarForPrincipal,
   issueVisibleToPrincipal,
   issueVisibleInCalendar,
-  listIssuesForCalendar
+  listIssuesForCalendar,
+  listCalendarEventsForCalendar,
+  calendarEventVisibleToPrincipal
 } from "./caldav-calendars.js";
 
 function parseBasicAuth(header) {
@@ -121,9 +123,11 @@ function listVisibleIssuesForCalendar(db, principal, calendar) {
 }
 
 function hideEmptyCalendars(db, principal, calendars) {
-  return (calendars || []).filter((calendar) =>
-    listVisibleIssuesForCalendar(db, principal, calendar).some((issue) => issue.status === "open")
-  );
+  return (calendars || []).filter((calendar) => {
+    const hasOpenIssues = listVisibleIssuesForCalendar(db, principal, calendar).some((issue) => issue.status === "open");
+    if (hasOpenIssues) return true;
+    return listCalendarEventsForCalendar(db, calendar).length > 0;
+  });
 }
 
 function summarizeCalendars(calendars) {
@@ -165,20 +169,31 @@ function matchesPrincipalUser(pathUser, principalUsername) {
   return decodePathSegment(pathUser) === principalUsername;
 }
 
+function rowToIcs(row) {
+  if (row.calendarEvent) return calendarEventToVevent(row.calendarEvent);
+  if (row._isCalEvent) return calendarEventToVevent(row.item || row);
+  const issue = row.issue || row.item || row;
+  return issueToVtodo(issue);
+}
+
+function rowItem(row) {
+  return row.calendarEvent || row.issue || row.item || row;
+}
+
 function multistatusForCollection(_baseUrl, user, calendarId, token, rows) {
   const calendarHref = `${calendarPath(user, calendarId)}`;
   const responses = rows
     .map((row) => {
-      const issue = row.issue || row;
+      const item = rowItem(row);
       const includeCalendarData = row.projection?.includeCalendarData !== false;
-      const href = `${objectPath(user, calendarId, issue.caldav_uid)}`;
+      const href = `${objectPath(user, calendarId, item.caldav_uid)}`;
       return `
   <d:response>
     <d:href>${href}</d:href>
     <d:propstat>
       <d:prop>
-        <d:getetag>${issue.caldav_etag}</d:getetag>
-        ${includeCalendarData ? `<c:calendar-data>${xmlEscape(issueToVtodo(issue))}</c:calendar-data>` : ""}
+        <d:getetag>${item.caldav_etag}</d:getetag>
+        ${includeCalendarData ? `<c:calendar-data>${xmlEscape(rowToIcs(row))}</c:calendar-data>` : ""}
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
@@ -199,7 +214,10 @@ function multistatusForCollection(_baseUrl, user, calendarId, token, rows) {
           <d:supported-report><d:report><c:calendar-query/></d:report></d:supported-report>
           <d:supported-report><d:report><d:sync-collection/></d:report></d:supported-report>
         </d:supported-report-set>
-        <c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set>
+        <c:supported-calendar-component-set>
+          <c:comp name="VTODO"/>
+          <c:comp name="VEVENT"/>
+        </c:supported-calendar-component-set>
         <cs:getctag>${token}</cs:getctag>
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
@@ -224,7 +242,10 @@ function multistatusForPrincipal(_baseUrl, principal, calendars) {
           <d:supported-report><d:report><c:calendar-query/></d:report></d:supported-report>
           <d:supported-report><d:report><d:sync-collection/></d:report></d:supported-report>
         </d:supported-report-set>
-        <c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set>
+        <c:supported-calendar-component-set>
+          <c:comp name="VTODO"/>
+          <c:comp name="VEVENT"/>
+        </c:supported-calendar-component-set>
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
@@ -427,13 +448,32 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     }
 
     const baseIssues = listVisibleIssuesForCalendar(db, principal, calendar);
-    const report = req.method === "REPORT" ? runReportQuery({ issues: baseIssues, reportBody: req.body, syncToken }) : null;
+    const baseCalEvents = listCalendarEventsForCalendar(db, calendar).filter((ev) =>
+      calendarEventVisibleToPrincipal(ev, principal)
+    );
+    const report = req.method === "REPORT"
+      ? runReportQuery({ issues: baseIssues, calendarEvents: baseCalEvents, reportBody: req.body, syncToken })
+      : null;
     const depth = String(req.header("depth") || "1");
-    const rows = depth === "0" && req.method === "PROPFIND" ? [] : report?.results || report?.issues || baseIssues;
+
+    let rows;
+    if (depth === "0" && req.method === "PROPFIND") {
+      rows = [];
+    } else if (report?.results) {
+      rows = report.results;
+    } else {
+      const reportIssues = report?.issues || baseIssues;
+      const reportCalEvents = report?.calendarEvents || baseCalEvents;
+      rows = [
+        ...reportIssues,
+        ...reportCalEvents.map((ev) => ({ _isCalEvent: true, item: ev }))
+      ];
+    }
+
     console.log(
       `[caldav] principal=${principal.username} calendar=${calendarId} method=${req.method} depth=${depth} report=${
         report?.type || "none"
-      } visible=${baseIssues.length} rows=${rows.length} children=${baseIssues.filter((issue) => issue.parent_event_id).length}`
+      } issues=${baseIssues.length} calEvents=${baseCalEvents.length} rows=${rows.length}`
     );
 
     return xmlResponse(res, 207, multistatusForCollection(caldavConfig.baseUrl, principal.username, calendarId, syncToken, rows));
@@ -455,6 +495,13 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       channelTags: resolveChannelTags(db, principal)
     });
     if (!calendar) return res.status(404).send("Not found");
+
+    const calEvent = db.getCalendarEventByUid?.(uid);
+    if (calEvent && calendarEventVisibleToPrincipal(calEvent, principal)) {
+      res.set("Content-Type", "text/calendar; charset=utf-8");
+      res.set("ETag", calEvent.caldav_etag || `\"${calEvent.event_id}\"`);
+      return res.status(200).send(calendarEventToVevent(calEvent));
+    }
 
     const issue = db.getIssueByUid(uid);
     if (
