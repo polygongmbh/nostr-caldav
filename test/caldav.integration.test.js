@@ -67,15 +67,20 @@ test("CalDAV PUT integration updates DB and invokes Nostr publisher", async () =
   db.close();
 });
 
-test("CalDAV PUT integration enforces ETag conflicts", async () => {
+test("CalDAV PUT integration ignores stale ETags and proceeds", async () => {
   const db = openDb(mkDbPath());
   const issue = seedIssue(db);
+  const published = [];
 
+  // The bridge intentionally ignores ETag mismatches: Nostr relay updates
+  // can bump the ETag between a client's last PROPFIND and its PUT, so
+  // enforcing 412 would cause spurious conflicts on every relay update.
   const result = await processVtodoPut({
     db,
     syncService: {
-      async publishStatusFromCaldav() {
-        throw new Error("should not publish");
+      async publishStatusFromCaldav(issueEventId, status) {
+        published.push({ issueEventId, status });
+        return { skipped: false, event: { id: "ok", kind: 1631 } };
       }
     },
     uid: issue.caldav_uid,
@@ -91,7 +96,8 @@ test("CalDAV PUT integration enforces ETag conflicts", async () => {
     ].join("\r\n")
   });
 
-  assert.equal(result.status, 412);
+  assert.equal(result.status, 204, "stale ETag should be ignored and PUT should succeed");
+  assert.equal(published.length, 1, "status change should still be published");
 
   db.close();
 });
