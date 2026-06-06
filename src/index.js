@@ -65,10 +65,27 @@ async function main() {
     onComment: (event) => {
       syncService.onCommentEvent(event);
     },
+    onCalendarEvent: (event) => {
+      syncService.onCalendarEvent(event, "multi-relay");
+    },
     onauth: authSigner
   });
 
   subscriber.start();
+
+  // Re-subscribe all pubkeys already in the DB so live updates work immediately
+  // even before users authenticate in this session. Without this, follow_pubkeys: []
+  // means no subscriptions are active until someone logs in via CalDAV.
+  const knownPubkeys = db.listDistinctIssuePubkeys();
+  for (const pubkey of knownPubkeys) {
+    if (!trackedPubkeys.includes(pubkey)) {
+      trackedPubkeys.push(pubkey);
+      subscriber.addAuthor(pubkey);
+    }
+  }
+  if (knownPubkeys.length > 0) {
+    console.log(`Re-subscribed ${knownPubkeys.length} known pubkeys from DB`);
+  }
 
   const missingBefore = db.listIssueEventIdsMissingChannelTags(5000);
   if (missingBefore.length > 0) {
@@ -133,6 +150,23 @@ async function main() {
       console.log(`Status backfill complete: requested=${result.requested} chunks=${result.chunks}`);
     } catch (error) {
       console.error("Status backfill failed", error);
+    }
+  }
+
+  // Backfill calendar events for all known pubkeys
+  const calendarBackfillPubkeys = db.listDistinctIssuePubkeys();
+  if (calendarBackfillPubkeys.length > 0) {
+    console.log(`Backfill: fetching calendar events for ${calendarBackfillPubkeys.length} known pubkeys`);
+    try {
+      const result = await subscriber.refetchCalendarEventsByAuthors(calendarBackfillPubkeys, {
+        chunkSize: 50,
+        timeoutMs: 12000,
+        since
+      });
+      const calCount = db.listCalendarEventsFiltered({}).length;
+      console.log(`Calendar event backfill complete: requested=${result.requested} chunks=${result.chunks} stored=${calCount}`);
+    } catch (error) {
+      console.error("Calendar event backfill failed", error);
     }
   }
 
