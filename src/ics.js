@@ -143,3 +143,49 @@ export function issueToVtodo(issue) {
   lines.push("END:VTODO", "END:VCALENDAR", "");
   return lines.join("\r\n");
 }
+
+export function calendarEventToVevent(calEvent) {
+  const labels = JSON.parse(calEvent.labels || "[]");
+  const created = toUtcStamp(calEvent.created_at || calEvent.last_modified);
+  const modified = toUtcStamp(calEvent.last_modified || calEvent.created_at);
+  const nevent = nip19.neventEncode({ id: calEvent.event_id, author: calEvent.pubkey });
+  const url = `nostr:${nevent}`;
+
+  let dtstart, dtend;
+  if (calEvent.is_all_day) {
+    const startPacked = String(calEvent.start_date || "").replace(/-/g, "");
+    const endPacked = String(calEvent.end_date || "").replace(/-/g, "");
+    dtstart = startPacked ? `DTSTART;VALUE=DATE:${startPacked}` : null;
+    dtend = endPacked ? `DTEND;VALUE=DATE:${endPacked}` : null;
+  } else {
+    dtstart = calEvent.start_at ? `DTSTART:${toUtcStamp(calEvent.start_at)}` : null;
+    dtend = calEvent.end_at ? `DTEND:${toUtcStamp(calEvent.end_at)}` : null;
+  }
+
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//nostr-caldav-bridge//EN",
+    "CALSCALE:GREGORIAN",
+    "BEGIN:VEVENT",
+    `UID:${escapeIcs(calEvent.caldav_uid)}`,
+    `DTSTAMP:${modified}`,
+    `CREATED:${created}`,
+    `LAST-MODIFIED:${modified}`,
+    `SEQUENCE:${calEvent.sequence || 0}`,
+    `SUMMARY:${escapeIcs(calEvent.title || "(untitled)")}`,
+    `DESCRIPTION:${escapeIcs(calEvent.description || "")}`,
+    dtstart,
+    dtend,
+    calEvent.location ? `LOCATION:${escapeIcs(calEvent.location)}` : null,
+    `ORGANIZER;CN=${escapeIcs(calEvent.pubkey)}:mailto:noreply@nostr.local`,
+    `URL:${escapeIcs(url)}`
+  ];
+
+  if (labels.length > 0) {
+    lines.push(`CATEGORIES:${labels.map((l) => escapeIcs(l)).join(",")}`);
+  }
+
+  lines.push("END:VEVENT", "END:VCALENDAR", "");
+  return lines.filter(Boolean).join("\r\n");
+}
