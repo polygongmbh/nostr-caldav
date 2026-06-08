@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildPrincipalCalendars, issueVisibleInCalendar, issueVisibleToPrincipal } from "../src/caldav-calendars.js";
+import {
+  buildPrincipalCalendars,
+  issueVisibleInCalendar,
+  issueVisibleToPrincipal,
+  applyListVisibilityRules,
+  listIssuesForCalendar,
+  SMALL_LIST_THRESHOLD
+} from "../src/caldav-calendars.js";
 
 test("buildPrincipalCalendars creates base and pubkey calendars", () => {
   const principal = {
@@ -81,6 +88,183 @@ test("issueVisibleToPrincipal allows mention to me and my own unmentioned tasks 
     mention_handles: JSON.stringify([])
   };
   assert.equal(issueVisibleToPrincipal(mineMentionsOther, principal), false);
+});
+
+test("applyListVisibilityRules shows lists with more than SMALL_LIST_THRESHOLD issues normally", () => {
+  const bigIssues = Array.from({ length: SMALL_LIST_THRESHOLD + 1 }, (_, i) => ({
+    event_id: `evt-big-${i}`,
+    pubkey: "a".repeat(64),
+    mention_pubkeys: JSON.stringify([]),
+    mention_handles: JSON.stringify([]),
+    status: i === 0 ? "open" : "completed"  // at least one open, rest closed — total counts toward threshold
+  }));
+  const smallIssues = [
+    {
+      event_id: "evt-small-0",
+      pubkey: "a".repeat(64),
+      mention_pubkeys: JSON.stringify([]),
+      mention_handles: JSON.stringify([]),
+      status: "open"
+    }
+  ];
+
+  const bigCal = { id: "big-list", name: "Big List", filter: { pubkeys: ["big"] } };
+  const smallCal = { id: "small-list", name: "Small List", filter: { pubkeys: ["small"] } };
+
+  const db = {
+    listIssuesFiltered(filter) {
+      if (filter?.pubkeys?.includes("big")) return bigIssues;
+      if (filter?.pubkeys?.includes("small")) return smallIssues;
+      return [];
+    },
+    listCalendarEventsFiltered() { return []; },
+    getIssueByEventId() { return null; }
+  };
+
+  const principal = { username: "me", pubkeys: ["a".repeat(64)] };
+  const result = applyListVisibilityRules(db, principal, [bigCal, smallCal]);
+
+  const ids = result.map((c) => c.id);
+  assert.ok(ids.includes("big-list"), "big list should be visible");
+  assert.ok(!ids.includes("small-list"), "small list should not be shown independently");
+  assert.ok(ids.includes("other-tasks"), "other-tasks should appear");
+  assert.equal(ids[ids.length - 1], "other-tasks", "other-tasks must be last");
+});
+
+test("applyListVisibilityRules collects small-list issues into other-tasks", () => {
+  const smallIssue = {
+    event_id: "evt-small-0",
+    pubkey: "a".repeat(64),
+    mention_pubkeys: JSON.stringify([]),
+    mention_handles: JSON.stringify([]),
+    status: "open"
+  };
+  const smallCal = { id: "small-list", name: "Small List", filter: { pubkeys: ["small"] } };
+
+  const db = {
+    listIssuesFiltered(filter) {
+      if (filter?.pubkeys?.includes("small")) return [smallIssue];
+      return [];
+    },
+    listCalendarEventsFiltered() { return []; },
+    getIssueByEventId() { return null; }
+  };
+
+  const principal = { username: "me", pubkeys: ["a".repeat(64)] };
+  const result = applyListVisibilityRules(db, principal, [smallCal]);
+  const otherTasks = result.find((c) => c.id === "other-tasks");
+
+  assert.ok(otherTasks, "other-tasks calendar should be created");
+  assert.equal(otherTasks.isOtherTasks, true);
+  assert.equal(otherTasks.collectedCalendars.length, 1);
+  assert.equal(otherTasks.collectedCalendars[0].id, "small-list");
+});
+
+test("applyListVisibilityRules drops calendars with zero visible issues", () => {
+  const emptyCal = { id: "empty-list", name: "Empty", filter: { pubkeys: ["nobody"] } };
+
+  const db = {
+    listIssuesFiltered() { return []; },
+    listCalendarEventsFiltered() { return []; },
+    getIssueByEventId() { return null; }
+  };
+
+  const principal = { username: "me", pubkeys: ["a".repeat(64)] };
+  const result = applyListVisibilityRules(db, principal, [emptyCal]);
+
+  assert.equal(result.length, 0, "empty calendars should be dropped");
+});
+
+test("applyListVisibilityRules drops calendars with only closed issues", () => {
+  const closedIssues = Array.from({ length: 3 }, (_, i) => ({
+    event_id: `evt-closed-${i}`,
+    pubkey: "a".repeat(64),
+    mention_pubkeys: JSON.stringify([]),
+    mention_handles: JSON.stringify([]),
+    status: "completed"
+  }));
+  const cal = { id: "closed-only", name: "Closed Only", filter: {} };
+
+  const db = {
+    listIssuesFiltered() { return closedIssues; },
+    listCalendarEventsFiltered() { return []; },
+    getIssueByEventId() { return null; }
+  };
+
+  const principal = { username: "me", pubkeys: ["a".repeat(64)] };
+  const result = applyListVisibilityRules(db, principal, [cal]);
+
+  assert.equal(result.length, 0, "closed-only calendars should be hidden");
+});
+
+test("applyListVisibilityRules returns no other-tasks when all lists are large", () => {
+  const bigIssues = Array.from({ length: SMALL_LIST_THRESHOLD + 2 }, (_, i) => ({
+    event_id: `evt-${i}`,
+    pubkey: "a".repeat(64),
+    mention_pubkeys: JSON.stringify([]),
+    mention_handles: JSON.stringify([]),
+    status: "open"
+  }));
+  const cal = { id: "big", name: "Big", filter: {} };
+
+  const db = {
+    listIssuesFiltered() { return bigIssues; },
+    listCalendarEventsFiltered() { return []; },
+    getIssueByEventId() { return null; }
+  };
+
+  const principal = { username: "me", pubkeys: ["a".repeat(64)] };
+  const result = applyListVisibilityRules(db, principal, [cal]);
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].id, "big");
+  assert.ok(!result.find((c) => c.id === "other-tasks"));
+});
+
+test("applyListVisibilityRules drops calendars with calendar events but no open issues", () => {
+  const cal = { id: "cal-with-events", name: "Has Events", filter: {} };
+
+  const db = {
+    listIssuesFiltered() { return []; },
+    listCalendarEventsFiltered() { return [{ event_id: "ev1", caldav_uid: "u1" }]; },
+    getIssueByEventId() { return null; },
+    issueHasSubtasks() { return false; }
+  };
+
+  const principal = { username: "me", pubkeys: ["a".repeat(64)] };
+  const result = applyListVisibilityRules(db, principal, [cal]);
+
+  assert.equal(result.length, 0, "no open issues means calendar is dropped regardless of cal events");
+});
+
+test("listIssuesForCalendar combines issues from collectedCalendars for other-tasks", () => {
+  const issue1 = { event_id: "e1", pubkey: "a".repeat(64) };
+  const issue2 = { event_id: "e2", pubkey: "b".repeat(64) };
+  const issue3 = { event_id: "e1", pubkey: "a".repeat(64) }; // duplicate of issue1
+
+  const db = {
+    listIssuesFiltered(filter) {
+      if (filter?.pubkeys?.includes("a")) return [issue1, issue3];
+      if (filter?.pubkeys?.includes("b")) return [issue2];
+      return [];
+    }
+  };
+
+  const otherTasks = {
+    id: "other-tasks",
+    name: "Other Tasks",
+    isOtherTasks: true,
+    collectedCalendars: [
+      { id: "a-list", filter: { pubkeys: ["a"] } },
+      { id: "b-list", filter: { pubkeys: ["b"] } }
+    ],
+    filter: {}
+  };
+
+  const result = listIssuesForCalendar(db, otherTasks);
+  assert.equal(result.length, 2, "duplicates should be de-duplicated");
+  assert.ok(result.find((i) => i.event_id === "e1"));
+  assert.ok(result.find((i) => i.event_id === "e2"));
 });
 
 test("issueVisibleToPrincipal allows children of visible parent tasks", () => {

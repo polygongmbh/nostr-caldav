@@ -9,7 +9,8 @@ import {
   issueVisibleInCalendar,
   listIssuesForCalendar,
   listCalendarEventsForCalendar,
-  calendarEventVisibleToPrincipal
+  calendarEventVisibleToPrincipal,
+  applyListVisibilityRules
 } from "./caldav-calendars.js";
 
 function parseBasicAuth(header) {
@@ -120,14 +121,6 @@ function resolveChannelTags(db, principal) {
 
 function listVisibleIssuesForCalendar(db, principal, calendar) {
   return withPrincipalVisibility(listIssuesForCalendar(db, calendar), principal, db);
-}
-
-function hideEmptyCalendars(db, principal, calendars) {
-  return (calendars || []).filter((calendar) => {
-    const hasOpenIssues = listVisibleIssuesForCalendar(db, principal, calendar).some((issue) => issue.status === "open");
-    if (hasOpenIssues) return true;
-    return listCalendarEventsForCalendar(db, calendar).length > 0;
-  });
 }
 
 function summarizeCalendars(calendars) {
@@ -356,7 +349,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       ...calendarOptions,
       channelTags
     });
-    const calendars = hideEmptyCalendars(db, principal, discoveredCalendars);
+    const calendars = applyListVisibilityRules(db, principal, discoveredCalendars);
     const visibleCount = withPrincipalVisibility(db.listIssues(), principal, db).length;
     return res.status(200).json({
       generated_at: new Date().toISOString(),
@@ -385,7 +378,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       ...calendarOptions,
       channelTags: resolveChannelTags(db, principal)
     });
-    const calendars = hideEmptyCalendars(db, principal, discoveredCalendars);
+    const calendars = applyListVisibilityRules(db, principal, discoveredCalendars);
     if (normalizedPath.match(/^\/calendars\/[^/]+$/)) {
       const summary = summarizeCalendars(calendars);
       console.log(
@@ -441,7 +434,8 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     const calendarId = decodePathSegment(collectionMatch[2]);
     const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, {
       ...calendarOptions,
-      channelTags: resolveChannelTags(db, principal)
+      channelTags: resolveChannelTags(db, principal),
+      db
     });
     if (!calendar) {
       return res.status(404).send("Not found");
@@ -492,7 +486,8 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
 
     const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, {
       ...calendarOptions,
-      channelTags: resolveChannelTags(db, principal)
+      channelTags: resolveChannelTags(db, principal),
+      db
     });
     if (!calendar) return res.status(404).send("Not found");
 
@@ -536,7 +531,8 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
 
     const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, {
       ...calendarOptions,
-      channelTags: resolveChannelTags(db, principal)
+      channelTags: resolveChannelTags(db, principal),
+      db
     });
     if (!calendar) {
       db.logSync({

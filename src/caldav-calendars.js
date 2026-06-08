@@ -78,6 +78,12 @@ export function findCalendarForPrincipal(principal, trackedPubkeys, calendarId, 
   const found = calendars.find((cal) => cal.id === calendarId);
   if (found) return found;
 
+  if (calendarId === "other-tasks" && options.db) {
+    const visible = applyListVisibilityRules(options.db, principal, calendars);
+    const otherTasks = visible.find((c) => c.id === "other-tasks");
+    if (otherTasks) return otherTasks;
+  }
+
   // Compatibility fallback for clients with cached legacy calendar IDs.
   if (calendarId === "nostr-issues") {
     return {
@@ -90,17 +96,84 @@ export function findCalendarForPrincipal(principal, trackedPubkeys, calendarId, 
   return null;
 }
 
+export const SMALL_LIST_THRESHOLD = 5;
+
 export function listIssuesForCalendar(db, calendar) {
+  if (calendar?.isOtherTasks && Array.isArray(calendar.collectedCalendars)) {
+    const seen = new Set();
+    const result = [];
+    for (const col of calendar.collectedCalendars) {
+      for (const issue of db.listIssuesFiltered(col.filter || {})) {
+        if (!seen.has(issue.event_id)) {
+          seen.add(issue.event_id);
+          result.push(issue);
+        }
+      }
+    }
+    return result;
+  }
   return db.listIssuesFiltered(calendar?.filter || {});
 }
 
 export function listCalendarEventsForCalendar(db, calendar) {
   if (typeof db?.listCalendarEventsFiltered !== "function") return [];
+  if (calendar?.isOtherTasks && Array.isArray(calendar.collectedCalendars)) {
+    const seen = new Set();
+    const result = [];
+    for (const col of calendar.collectedCalendars) {
+      for (const event of db.listCalendarEventsFiltered(col.filter || {})) {
+        if (!seen.has(event.event_id)) {
+          seen.add(event.event_id);
+          result.push(event);
+        }
+      }
+    }
+    return result;
+  }
   return db.listCalendarEventsFiltered(calendar?.filter || {});
 }
 
 export function calendarEventVisibleToPrincipal(_calEvent, _principal) {
   return true;
+}
+
+function visibleIssuesForCalendar(db, principal, calendar) {
+  return (listIssuesForCalendar(db, calendar) || []).filter((issue) => {
+    if (db.issueHasSubtasks?.(issue.event_id)) return false;
+    return issueVisibleToPrincipal(issue, principal, {
+      getIssueByEventId: db?.getIssueByEventId?.bind(db)
+    });
+  });
+}
+
+export function applyListVisibilityRules(db, principal, calendars) {
+  const large = [];
+  const small = [];
+
+  for (const calendar of calendars || []) {
+    const issues = visibleIssuesForCalendar(db, principal, calendar);
+    const hasOpenIssues = issues.some((i) => i.status === "open");
+    if (!hasOpenIssues) continue;
+
+    if (issues.length > SMALL_LIST_THRESHOLD) {
+      large.push(calendar);
+    } else {
+      small.push(calendar);
+    }
+  }
+
+  if (small.length === 0) return large;
+
+  return [
+    ...large,
+    {
+      id: "other-tasks",
+      name: "Other Tasks",
+      isOtherTasks: true,
+      collectedCalendars: small,
+      filter: {}
+    }
+  ];
 }
 
 export function issueVisibleInCalendar(issue, calendar) {
