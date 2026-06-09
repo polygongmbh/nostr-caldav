@@ -124,7 +124,6 @@ export function issueToVtodo(issue) {
     `LAST-MODIFIED:${modified}`,
     `SEQUENCE:${issue.sequence || 0}`,
     `SUMMARY:${escapeIcs(issue.subject || "(no subject)")}`,
-    `DESCRIPTION:${escapeIcs(issue.body || "")}`,
     `STATUS:${toVtodoFromInternal(issue.status)}`,
     `ORGANIZER;CN=${escapeIcs(issue.pubkey)}:mailto:noreply@nostr.local`,
     `URL:${escapeIcs(url)}`

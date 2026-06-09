@@ -75,8 +75,10 @@ function ensureColumn(db, table, column, definition) {
   }
 }
 
+const ETAG_FORMAT_VERSION = "v2";
+
 function etagFor(eventId, sequence) {
-  return `\"${eventId}-${sequence}\"`;
+  return `\"${eventId}-${sequence}-${ETAG_FORMAT_VERSION}\"`;
 }
 
 function findFirstTag(tags, name) {
