@@ -1,3 +1,17 @@
+function normalizeStoredRelayUrl(value) {
+  return String(value || "").trim().toLowerCase().replace(/\/+$/, "") || null;
+}
+
+function relayMatchesFilter(relayUrls, relayUrl, relayFilter) {
+  // Check the JSON array of all relays this event was seen from.
+  try {
+    const arr = JSON.parse(relayUrls || "[]");
+    if (Array.isArray(arr) && arr.some((u) => normalizeStoredRelayUrl(u) === relayFilter)) return true;
+  } catch {}
+  // Fallback: check the legacy single relay_url column.
+  return normalizeStoredRelayUrl(relayUrl) === relayFilter;
+}
+
 function sanitizeId(value) {
   return String(value || "")
     .toLowerCase()
@@ -133,7 +147,10 @@ export function listCalendarEventsForCalendar(db, calendar) {
   return db.listCalendarEventsFiltered(calendar?.filter || {});
 }
 
-export function calendarEventVisibleToPrincipal(_calEvent, _principal) {
+export function calendarEventVisibleToPrincipal(calEvent, principal) {
+  if (principal?.relayFilter) {
+    if (!relayMatchesFilter(calEvent?.relay_urls, calEvent?.relay_url, principal.relayFilter)) return false;
+  }
   return true;
 }
 
@@ -206,6 +223,10 @@ export function issueVisibleInCalendar(issue, calendar) {
 }
 
 export function issueVisibleToPrincipal(issue, principal, options = {}) {
+  if (principal?.relayFilter) {
+    if (!relayMatchesFilter(issue?.relay_urls, issue?.relay_url, principal.relayFilter)) return false;
+  }
+
   const myPubkey = String(principal?.pubkeys?.[0] || "").trim().toLowerCase();
   const myHandle = normalizeHandle(principal?.username);
   const issueAuthor = String(issue?.pubkey || "").trim().toLowerCase();

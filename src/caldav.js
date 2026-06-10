@@ -355,6 +355,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       generated_at: new Date().toISOString(),
       principal: principal?.username || null,
       principal_pubkey: principal?.pubkeys?.[0] || null,
+      relay_filter: principal?.relayFilter || null,
       visible_issue_count: visibleCount,
       discovered_calendar_count: discoveredCalendars.length,
       visible_calendar_count: calendars.length,

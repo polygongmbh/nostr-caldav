@@ -18,17 +18,22 @@ export class NostrSubscriber {
     this.onComment = onComment;
     this.onCalendarEvent = onCalendarEvent;
     this.onauth = onauth;
+    // Tracks "eventId:relayUrl" to allow the same event from different relays
+    // to be processed separately for relay attribution.
     this.seen = new Set();
     this.authorSigners = new Map();
+    // Tracks "pubkey:relayUrl" pairs that already have active subscriptions.
+    this.subscribedAuthorRelays = new Set();
   }
 
-  makeEventHandler() {
+  makeRelayEventHandler(relayUrl) {
     return (event) => {
-      if (this.seen.has(event.id)) return;
-      this.seen.add(event.id);
+      const key = `${event.id}:${relayUrl || ""}`;
+      if (this.seen.has(key)) return;
+      this.seen.add(key);
 
       if (event.kind === ISSUE_KIND) {
-        this.onIssue(event);
+        this.onIssue(event, relayUrl);
         return;
       }
 
@@ -45,7 +50,7 @@ export class NostrSubscriber {
       }
 
       if (event.kind === CALENDAR_EVENT_DATE_KIND || event.kind === CALENDAR_EVENT_TIME_KIND) {
-        if (this.onCalendarEvent) this.onCalendarEvent(event);
+        if (this.onCalendarEvent) this.onCalendarEvent(event, relayUrl);
       }
     };
   }
@@ -59,52 +64,60 @@ export class NostrSubscriber {
 
   subscribeAuthor(pubkey, signerOverride = null) {
     const onauth = this.buildOnauthForSigner(signerOverride);
-    const eventHandler = this.makeEventHandler();
+    const subscriptions = [];
 
-    const makeParams = () => ({
-      onauth,
-      onevent: eventHandler,
-      oneose: () => {},
-      onclose: (reasons) => {
-        console.error("Nostr subscription closed", reasons);
-      }
-    });
+    for (const relay of this.relays) {
+      this.subscribedAuthorRelays.add(`${pubkey}:${relay}`);
+      const eventHandler = this.makeRelayEventHandler(relay);
 
-    const subscriptions = [
-      this.pool.subscribeMany(
-        this.relays,
-        { kinds: [ISSUE_KIND], since: this.since, authors: [pubkey] },
-        makeParams()
-      ),
-      this.pool.subscribeMany(
-        this.relays,
-        {
-          kinds: [1630, 1631, 1632, 1633],
-          since: this.since,
-          authors: [pubkey]
-        },
-        makeParams()
-      ),
-      this.pool.subscribeMany(
-        this.relays,
-        {
-          kinds: [COMMENT_KIND],
-          since: this.since,
-          authors: [pubkey]
-        },
-        makeParams()
-      ),
-      this.pool.subscribeMany(
-        this.relays,
-        {
-          kinds: [CALENDAR_EVENT_DATE_KIND, CALENDAR_EVENT_TIME_KIND],
-          since: this.since,
-          authors: [pubkey]
-        },
-        makeParams()
-      )
-    ];
+      const makeParams = () => ({
+        onauth,
+        onevent: eventHandler,
+        oneose: () => {},
+        onclose: (reasons) => {
+          console.error("Nostr subscription closed", reasons);
+        }
+      });
+
+      subscriptions.push(
+        this.pool.subscribeMany([relay], { kinds: [ISSUE_KIND], since: this.since, authors: [pubkey] }, makeParams()),
+        this.pool.subscribeMany([relay], { kinds: [1630, 1631, 1632, 1633], since: this.since, authors: [pubkey] }, makeParams()),
+        this.pool.subscribeMany([relay], { kinds: [COMMENT_KIND], since: this.since, authors: [pubkey] }, makeParams()),
+        this.pool.subscribeMany(
+          [relay],
+          { kinds: [CALENDAR_EVENT_DATE_KIND, CALENDAR_EVENT_TIME_KIND], since: this.since, authors: [pubkey] },
+          makeParams()
+        )
+      );
+    }
+
     return subscriptions;
+  }
+
+  // Runs a one-shot subscription across all relays in parallel, attributing events to their relay.
+  async _fetchPerRelay(filters, timeoutMs, onevent) {
+    const filterArr = Array.isArray(filters) ? filters : [filters];
+    await Promise.all(
+      this.relays.map(
+        (relay) =>
+          new Promise((resolve) => {
+            let done = false;
+            const finish = () => {
+              if (done) return;
+              done = true;
+              clearTimeout(timer);
+              sub?.close?.();
+              resolve();
+            };
+            const timer = setTimeout(finish, timeoutMs);
+            const sub = this.pool.subscribeMany([relay], filterArr, {
+              onevent: (event) => onevent(event, relay),
+              oneose: finish,
+              onclose: finish
+            });
+          })
+      )
+    );
   }
 
   start() {
@@ -120,6 +133,79 @@ export class NostrSubscriber {
     }
 
     return this.subs;
+  }
+
+  // Subscribe a single author to a relay that isn't in this.relays yet.
+  // Used when a user authenticates with a relay-scoped CalDAV credential.
+  subscribeAuthorToRelay(pubkey, relayUrl) {
+    const value = String(pubkey || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(value)) return;
+    const key = `${value}:${relayUrl}`;
+    if (this.subscribedAuthorRelays.has(key)) return;
+    this.subscribedAuthorRelays.add(key);
+    const signer = this.authorSigners.get(value) || null;
+    const onauth = this.buildOnauthForSigner(signer);
+    const eventHandler = this.makeRelayEventHandler(relayUrl);
+
+    const makeParams = () => ({
+      onauth,
+      onevent: eventHandler,
+      oneose: () => {},
+      onclose: (reasons) => {
+        console.error("Nostr subscription closed", reasons);
+      }
+    });
+
+    const newSubs = [
+      this.pool.subscribeMany([relayUrl], { kinds: [ISSUE_KIND], since: this.since, authors: [value] }, makeParams()),
+      this.pool.subscribeMany([relayUrl], { kinds: [1630, 1631, 1632, 1633], since: this.since, authors: [value] }, makeParams()),
+      this.pool.subscribeMany([relayUrl], { kinds: [COMMENT_KIND], since: this.since, authors: [value] }, makeParams()),
+      this.pool.subscribeMany(
+        [relayUrl],
+        { kinds: [CALENDAR_EVENT_DATE_KIND, CALENDAR_EVENT_TIME_KIND], since: this.since, authors: [value] },
+        makeParams()
+      )
+    ];
+
+    if (!Array.isArray(this.subs)) this.subs = [];
+    this.subs.push(...newSubs);
+  }
+
+  // Fetch all task-related events for a single author from a single relay.
+  // Used for targeted catch-up when a user authenticates with a relay-scoped credential.
+  async catchupAuthorOnRelay(pubkey, relayUrl, since, timeoutMs = 15000) {
+    const value = String(pubkey || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(value)) return;
+    const handler = this.makeRelayEventHandler(relayUrl);
+
+    const filters = [
+      { kinds: [ISSUE_KIND], authors: [value], since },
+      { kinds: [1630, 1631, 1632, 1633], authors: [value], since },
+      { kinds: [COMMENT_KIND], authors: [value], since },
+      { kinds: [CALENDAR_EVENT_DATE_KIND, CALENDAR_EVENT_TIME_KIND], authors: [value], since }
+    ];
+
+    await Promise.all(
+      filters.map(
+        (filter) =>
+          new Promise((resolve) => {
+            let done = false;
+            const finish = () => {
+              if (done) return;
+              done = true;
+              clearTimeout(timer);
+              sub?.close?.();
+              resolve();
+            };
+            const timer = setTimeout(finish, timeoutMs);
+            const sub = this.pool.subscribeMany([relayUrl], [filter], {
+              onevent: handler,
+              oneose: finish,
+              onclose: finish
+            });
+          })
+      )
+    );
   }
 
   addAuthor(pubkey, signerOverride = null) {
@@ -170,29 +256,12 @@ export class NostrSubscriber {
       chunks.push(ids.slice(i, i + chunkSize));
     }
 
-    const eventHandler = this.makeEventHandler();
-
     for (const chunk of chunks) {
-      await new Promise((resolve) => {
-        let done = false;
-        const finish = () => {
-          if (done) return;
-          done = true;
-          clearTimeout(timer);
-          sub?.close?.();
-          resolve();
-        };
-
-        const timer = setTimeout(finish, timeoutMs);
-        const sub = this.pool.subscribeMany(
-          this.relays,
-          { kinds: [ISSUE_KIND], ids: chunk },
-          {
-            onevent: eventHandler,
-            oneose: finish,
-            onclose: finish
-          }
-        );
+      await this._fetchPerRelay({ kinds: [ISSUE_KIND], ids: chunk }, timeoutMs, (event, relayUrl) => {
+        const key = `${event.id}:${relayUrl || ""}`;
+        if (this.seen.has(key)) return;
+        this.seen.add(key);
+        if (event.kind === ISSUE_KIND) this.onIssue(event, relayUrl);
       });
     }
 
@@ -216,29 +285,12 @@ export class NostrSubscriber {
       chunks.push(ids.slice(i, i + chunkSize));
     }
 
-    const eventHandler = this.makeEventHandler();
-
     for (const chunk of chunks) {
-      await new Promise((resolve) => {
-        let done = false;
-        const finish = () => {
-          if (done) return;
-          done = true;
-          clearTimeout(timer);
-          sub?.close?.();
-          resolve();
-        };
-
-        const timer = setTimeout(finish, timeoutMs);
-        const sub = this.pool.subscribeMany(
-          this.relays,
-          { kinds: [ISSUE_KIND], "#e": chunk },
-          {
-            onevent: eventHandler,
-            oneose: finish,
-            onclose: finish
-          }
-        );
+      await this._fetchPerRelay({ kinds: [ISSUE_KIND], "#e": chunk }, timeoutMs, (event, relayUrl) => {
+        const key = `${event.id}:${relayUrl || ""}`;
+        if (this.seen.has(key)) return;
+        this.seen.add(key);
+        if (event.kind === ISSUE_KIND) this.onIssue(event, relayUrl);
       });
     }
 
@@ -263,27 +315,14 @@ export class NostrSubscriber {
       chunks.push(authors.slice(i, i + chunkSize));
     }
 
-    const eventHandler = this.makeEventHandler();
-
     for (const chunk of chunks) {
-      await new Promise((resolve) => {
-        let done = false;
-        const finish = () => {
-          if (done) return;
-          done = true;
-          clearTimeout(timer);
-          sub?.close?.();
-          resolve();
-        };
-
-        const timer = setTimeout(finish, timeoutMs);
-        const filter = { kinds: [CALENDAR_EVENT_DATE_KIND, CALENDAR_EVENT_TIME_KIND], authors: chunk };
-        if (typeof since === "number") filter.since = since;
-        const sub = this.pool.subscribeMany(this.relays, filter, {
-          onevent: eventHandler,
-          oneose: finish,
-          onclose: finish
-        });
+      const filter = { kinds: [CALENDAR_EVENT_DATE_KIND, CALENDAR_EVENT_TIME_KIND], authors: chunk };
+      if (typeof since === "number") filter.since = since;
+      await this._fetchPerRelay(filter, timeoutMs, (event, relayUrl) => {
+        const key = `${event.id}:${relayUrl || ""}`;
+        if (this.seen.has(key)) return;
+        this.seen.add(key);
+        if (this.onCalendarEvent) this.onCalendarEvent(event, relayUrl);
       });
     }
 
@@ -308,27 +347,14 @@ export class NostrSubscriber {
       chunks.push(authors.slice(i, i + chunkSize));
     }
 
-    const eventHandler = this.makeEventHandler();
-
     for (const chunk of chunks) {
-      await new Promise((resolve) => {
-        let done = false;
-        const finish = () => {
-          if (done) return;
-          done = true;
-          clearTimeout(timer);
-          sub?.close?.();
-          resolve();
-        };
-
-        const timer = setTimeout(finish, timeoutMs);
-        const filter = { kinds: [ISSUE_KIND], authors: chunk };
-        if (typeof since === "number") filter.since = since;
-        const sub = this.pool.subscribeMany(this.relays, filter, {
-          onevent: eventHandler,
-          oneose: finish,
-          onclose: finish
-        });
+      const filter = { kinds: [ISSUE_KIND], authors: chunk };
+      if (typeof since === "number") filter.since = since;
+      await this._fetchPerRelay(filter, timeoutMs, (event, relayUrl) => {
+        const key = `${event.id}:${relayUrl || ""}`;
+        if (this.seen.has(key)) return;
+        this.seen.add(key);
+        if (event.kind === ISSUE_KIND) this.onIssue(event, relayUrl);
       });
     }
 
@@ -353,27 +379,14 @@ export class NostrSubscriber {
       chunks.push(mentions.slice(i, i + chunkSize));
     }
 
-    const eventHandler = this.makeEventHandler();
-
     for (const chunk of chunks) {
-      await new Promise((resolve) => {
-        let done = false;
-        const finish = () => {
-          if (done) return;
-          done = true;
-          clearTimeout(timer);
-          sub?.close?.();
-          resolve();
-        };
-
-        const timer = setTimeout(finish, timeoutMs);
-        const filter = { kinds: [ISSUE_KIND], "#p": chunk };
-        if (typeof since === "number") filter.since = since;
-        const sub = this.pool.subscribeMany(this.relays, filter, {
-          onevent: eventHandler,
-          oneose: finish,
-          onclose: finish
-        });
+      const filter = { kinds: [ISSUE_KIND], "#p": chunk };
+      if (typeof since === "number") filter.since = since;
+      await this._fetchPerRelay(filter, timeoutMs, (event, relayUrl) => {
+        const key = `${event.id}:${relayUrl || ""}`;
+        if (this.seen.has(key)) return;
+        this.seen.add(key);
+        if (event.kind === ISSUE_KIND) this.onIssue(event, relayUrl);
       });
     }
 
@@ -398,27 +411,15 @@ export class NostrSubscriber {
       chunks.push(ids.slice(i, i + chunkSize));
     }
 
-    const eventHandler = this.makeEventHandler();
-
     for (const chunk of chunks) {
-      await new Promise((resolve) => {
-        let done = false;
-        const finish = () => {
-          if (done) return;
-          done = true;
-          clearTimeout(timer);
-          sub?.close?.();
-          resolve();
-        };
-
-        const timer = setTimeout(finish, timeoutMs);
-        const filter = { kinds: [1630, 1631, 1632, 1633], "#e": chunk };
-        if (typeof since === "number") filter.since = since;
-        const sub = this.pool.subscribeMany(this.relays, filter, {
-          onevent: eventHandler,
-          oneose: finish,
-          onclose: finish
-        });
+      const filter = { kinds: [1630, 1631, 1632, 1633], "#e": chunk };
+      if (typeof since === "number") filter.since = since;
+      await this._fetchPerRelay(filter, timeoutMs, (event, relayUrl) => {
+        const key = `${event.id}:${relayUrl || ""}`;
+        if (this.seen.has(key)) return;
+        this.seen.add(key);
+        const issueId = getEventRefId(event.tags);
+        this.onStatus(event, issueId);
       });
     }
 
@@ -442,13 +443,13 @@ export function createNostrPublisher({ relays, signer, onauth }) {
       const tags = [];
       if (summary) tags.push(["subject", summary]);
       if (channelTag) tags.push(["t", String(channelTag).trim().toLowerCase()]);
-      
+
       // Extract hashtags from summary for nodex feed compatibility
       const hashtags = (summary || "").match(/#\w+/g) || [];
       for (const hashtag of hashtags) {
         tags.push(["t", hashtag.slice(1)]); // Remove # prefix for t-tag
       }
-      
+
       for (const label of labels) {
         const value = String(label || "").trim();
         if (value) tags.push(["label", value]);

@@ -56,8 +56,8 @@ async function main() {
     relays: config.nostr.relays,
     authors: trackedPubkeys,
     since,
-    onIssue: (event) => {
-      syncService.onIssueEvent(event, "multi-relay");
+    onIssue: (event, relayUrl) => {
+      syncService.onIssueEvent(event, relayUrl);
     },
     onStatus: (event) => {
       syncService.onStatusEvent(event);
@@ -65,8 +65,8 @@ async function main() {
     onComment: (event) => {
       syncService.onCommentEvent(event);
     },
-    onCalendarEvent: (event) => {
-      syncService.onCalendarEvent(event, "multi-relay");
+    onCalendarEvent: (event, relayUrl) => {
+      syncService.onCalendarEvent(event, relayUrl);
     },
     onauth: authSigner
   });
@@ -170,6 +170,19 @@ async function main() {
     }
   }
 
+  async function runRelayCatchup(pubkey, relayUrl) {
+    const markerKey = `relay_catchup_v1:${pubkey}:${relayUrl}`;
+    if (db.getConfigValue(markerKey) === "complete") return;
+    try {
+      console.log(`Relay catch-up: fetching from ${relayUrl} for ${pubkey.slice(0, 12)}`);
+      await subscriber.catchupAuthorOnRelay(pubkey, relayUrl, authCatchupSince);
+      db.setConfigValue(markerKey, "complete");
+      console.log(`Relay catch-up complete: ${relayUrl} for ${pubkey.slice(0, 12)}`);
+    } catch (error) {
+      console.error(`Relay catch-up failed for ${pubkey.slice(0, 12)}@${relayUrl}`, error);
+    }
+  }
+
   async function runUserCatchup(pubkey) {
     const markerKey = `user_catchup_v2:${pubkey}`;
     if (db.getConfigValue(markerKey) === "complete") return;
@@ -226,8 +239,20 @@ async function main() {
       if (!trackedPubkeys.includes(normalized)) {
         trackedPubkeys.push(normalized);
       }
+      const relayFilter = authContext?.noas?.relayFilter || null;
       if (subscriber) {
         subscriber.addAuthor(normalized, authContext.signer || null);
+        if (relayFilter) {
+          // Dynamically extend the relay set and subscribe this author to the filtered relay.
+          if (!subscriber.relays.includes(relayFilter)) {
+            subscriber.relays.push(relayFilter);
+            console.log(`Dynamically added relay ${relayFilter} from login`);
+          }
+          subscriber.subscribeAuthorToRelay(normalized, relayFilter);
+          runRelayCatchup(normalized, relayFilter).catch((error) => {
+            console.error("Background relay catch-up error", error);
+          });
+        }
         runUserCatchup(normalized).catch((error) => {
           console.error("Background catch-up error", error);
         });

@@ -152,3 +152,36 @@ test("parent tasks with subtasks are hidden from filtered task lists", () => {
 
   db.close();
 });
+
+test("relay_urls accumulates across multiple deliveries of the same event", () => {
+  const db = openDb(mkDbPath());
+  const eventId = "d".repeat(64);
+  const event = {
+    id: eventId,
+    pubkey: "e".repeat(64),
+    created_at: 1710000000,
+    kind: 1621,
+    content: "body",
+    tags: [["subject", "Multi-relay issue"]]
+  };
+
+  db.upsertIssueFromNostr(event, "wss://relay.alpha.com");
+  const after1 = db.getIssueByEventId(eventId);
+  assert.deepEqual(JSON.parse(after1.relay_urls), ["wss://relay.alpha.com"]);
+  assert.equal(after1.relay_url, "wss://relay.alpha.com");
+
+  // Same event arrives from a second relay — relay_urls should grow, content unchanged
+  db.upsertIssueFromNostr(event, "wss://relay.beta.com");
+  const after2 = db.getIssueByEventId(eventId);
+  const urls2 = JSON.parse(after2.relay_urls);
+  assert.ok(urls2.includes("wss://relay.alpha.com"), "alpha should still be in relay_urls");
+  assert.ok(urls2.includes("wss://relay.beta.com"), "beta should be added to relay_urls");
+
+  // Third delivery from same relay as first — no duplicate
+  db.upsertIssueFromNostr(event, "wss://relay.alpha.com");
+  const after3 = db.getIssueByEventId(eventId);
+  const urls3 = JSON.parse(after3.relay_urls);
+  assert.equal(urls3.filter((u) => u === "wss://relay.alpha.com").length, 1, "no duplicates in relay_urls");
+
+  db.close();
+});

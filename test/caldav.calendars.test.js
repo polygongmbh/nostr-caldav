@@ -4,6 +4,7 @@ import {
   buildPrincipalCalendars,
   issueVisibleInCalendar,
   issueVisibleToPrincipal,
+  calendarEventVisibleToPrincipal,
   applyListVisibilityRules,
   listIssuesForCalendar,
   SMALL_LIST_THRESHOLD
@@ -265,6 +266,111 @@ test("listIssuesForCalendar combines issues from collectedCalendars for other-ta
   assert.equal(result.length, 2, "duplicates should be de-duplicated");
   assert.ok(result.find((i) => i.event_id === "e1"));
   assert.ok(result.find((i) => i.event_id === "e2"));
+});
+
+test("issueVisibleToPrincipal: relayFilter matches via relay_urls JSON array", () => {
+  const principal = {
+    username: "me@example.com",
+    pubkeys: ["a".repeat(64)],
+    relayFilter: "wss://relay.target.com"
+  };
+  const base = { pubkey: "a".repeat(64), mention_pubkeys: JSON.stringify([]), mention_handles: JSON.stringify([]) };
+
+  // relay_urls array contains the target relay
+  assert.equal(
+    issueVisibleToPrincipal({ ...base, relay_url: null, relay_urls: JSON.stringify(["wss://relay.other.com", "wss://relay.target.com"]) }, principal),
+    true, "should match when target relay is in relay_urls array"
+  );
+
+  // relay_urls array does not contain the target relay
+  assert.equal(
+    issueVisibleToPrincipal({ ...base, relay_url: null, relay_urls: JSON.stringify(["wss://relay.other.com"]) }, principal),
+    false, "should not match when target relay is absent from relay_urls"
+  );
+
+  // relay_urls null/empty, fallback to relay_url
+  assert.equal(
+    issueVisibleToPrincipal({ ...base, relay_url: "wss://relay.target.com", relay_urls: null }, principal),
+    true, "fallback to relay_url when relay_urls is null"
+  );
+  assert.equal(
+    issueVisibleToPrincipal({ ...base, relay_url: "wss://relay.other.com", relay_urls: null }, principal),
+    false, "fallback relay_url mismatch hides issue"
+  );
+
+  // no relay anywhere → hidden
+  assert.equal(
+    issueVisibleToPrincipal({ ...base, relay_url: null, relay_urls: null }, principal),
+    false, "issue with no relay info should be hidden"
+  );
+});
+
+test("issueVisibleToPrincipal: relay URL trailing slash is normalized for comparison", () => {
+  const principal = {
+    username: "me@example.com",
+    pubkeys: ["a".repeat(64)],
+    relayFilter: "wss://relay.target.com"
+  };
+  const base = { pubkey: "a".repeat(64), mention_pubkeys: JSON.stringify([]), mention_handles: JSON.stringify([]) };
+
+  assert.equal(
+    issueVisibleToPrincipal({ ...base, relay_url: "wss://relay.target.com/", relay_urls: null }, principal),
+    true, "trailing slash in relay_url should be normalized"
+  );
+  assert.equal(
+    issueVisibleToPrincipal({ ...base, relay_url: null, relay_urls: JSON.stringify(["wss://relay.target.com/"]) }, principal),
+    true, "trailing slash in relay_urls entry should be normalized"
+  );
+});
+
+test("issueVisibleToPrincipal: no relayFilter means all relays pass", () => {
+  const principal = { username: "me@example.com", pubkeys: ["a".repeat(64)], relayFilter: null };
+  const issue = {
+    pubkey: "a".repeat(64),
+    relay_url: "wss://any.relay.com",
+    relay_urls: JSON.stringify(["wss://any.relay.com"]),
+    mention_pubkeys: JSON.stringify([]),
+    mention_handles: JSON.stringify([])
+  };
+  assert.equal(issueVisibleToPrincipal(issue, principal), true, "no relay filter passes all relays");
+});
+
+test("calendarEventVisibleToPrincipal: relayFilter uses relay_urls array and falls back to relay_url", () => {
+  const principal = {
+    username: "me@example.com",
+    pubkeys: ["a".repeat(64)],
+    relayFilter: "wss://relay.target.com"
+  };
+
+  // Found in relay_urls array
+  assert.equal(
+    calendarEventVisibleToPrincipal({ relay_url: null, relay_urls: JSON.stringify(["wss://relay.other.com", "wss://relay.target.com"]) }, principal),
+    true, "should match when target is in relay_urls"
+  );
+  // Not in relay_urls
+  assert.equal(
+    calendarEventVisibleToPrincipal({ relay_url: null, relay_urls: JSON.stringify(["wss://relay.other.com"]) }, principal),
+    false, "should not match when target absent from relay_urls"
+  );
+  // relay_urls null, fallback to relay_url
+  assert.equal(
+    calendarEventVisibleToPrincipal({ relay_url: "wss://relay.target.com", relay_urls: null }, principal),
+    true, "fallback to relay_url matches"
+  );
+  assert.equal(
+    calendarEventVisibleToPrincipal({ relay_url: "wss://relay.target.com/", relay_urls: null }, principal),
+    true, "trailing slash in relay_url normalized"
+  );
+  assert.equal(
+    calendarEventVisibleToPrincipal({ relay_url: null, relay_urls: null }, principal),
+    false, "no relay info hides event"
+  );
+});
+
+test("calendarEventVisibleToPrincipal: no relayFilter passes all events", () => {
+  const principal = { username: "me@example.com", pubkeys: [], relayFilter: null };
+  assert.equal(calendarEventVisibleToPrincipal({ relay_url: "wss://any.relay", relay_urls: null }, principal), true);
+  assert.equal(calendarEventVisibleToPrincipal({ relay_url: null, relay_urls: null }, principal), true);
 });
 
 test("issueVisibleToPrincipal allows children of visible parent tasks", () => {

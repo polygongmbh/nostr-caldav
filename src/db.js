@@ -68,6 +68,18 @@ function nowUnix() {
   return Math.floor(Date.now() / 1000);
 }
 
+function mergeRelayUrls(existingJson, newUrl) {
+  let arr;
+  try {
+    arr = JSON.parse(existingJson || "[]");
+    if (!Array.isArray(arr)) arr = [];
+  } catch {
+    arr = [];
+  }
+  if (newUrl && !arr.includes(newUrl)) arr.push(newUrl);
+  return JSON.stringify(arr);
+}
+
 function ensureColumn(db, table, column, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
   if (!columns.some((entry) => entry.name === column)) {
@@ -127,6 +139,8 @@ export function openDb(filePath) {
   ensureColumn(db, "issues", "mention_pubkeys", "TEXT");
   ensureColumn(db, "issues", "mention_handles", "TEXT");
   ensureColumn(db, "issues", "parent_event_id", "TEXT");
+  ensureColumn(db, "issues", "relay_urls", "TEXT");
+  ensureColumn(db, "calendar_events", "relay_urls", "TEXT");
 
   const getIssueByEventIdStmt = db.prepare("SELECT * FROM issues WHERE event_id = ?");
   const getIssueByUidStmt = db.prepare("SELECT * FROM issues WHERE caldav_uid = ?");
@@ -139,17 +153,18 @@ export function openDb(filePath) {
 
   const upsertIssueStmt = db.prepare(`
     INSERT INTO issues (
-      event_id, pubkey, relay_url, subject, body, labels, created_at, status,
+      event_id, pubkey, relay_url, relay_urls, subject, body, labels, created_at, status,
       channel_tags, mention_pubkeys, mention_handles, parent_event_id,
       caldav_uid, caldav_etag, sequence, last_modified, nostr_updated
     )
     VALUES (
-      @event_id, @pubkey, @relay_url, @subject, @body, @labels, @created_at, @status,
+      @event_id, @pubkey, @relay_url, @relay_urls, @subject, @body, @labels, @created_at, @status,
       @channel_tags, @mention_pubkeys, @mention_handles, @parent_event_id,
       @caldav_uid, @caldav_etag, @sequence, @last_modified, @nostr_updated
     )
     ON CONFLICT(event_id) DO UPDATE SET
       relay_url = excluded.relay_url,
+      relay_urls = excluded.relay_urls,
       subject = excluded.subject,
       body = excluded.body,
       labels = excluded.labels,
@@ -267,17 +282,26 @@ export function openDb(filePath) {
 
       // Avoid ETag churn on duplicate refetches of the exact same event payload.
       if (samePayload && Number(existing.nostr_updated || 0) >= Number(event.created_at || 0)) {
+        // Still accumulate relay_urls even when content is unchanged.
+        if (relayUrl) {
+          const merged = mergeRelayUrls(existing.relay_urls, relayUrl);
+          if (merged !== (existing.relay_urls || "[]")) {
+            db.prepare("UPDATE issues SET relay_urls = ? WHERE event_id = ?").run(merged, event.id);
+          }
+        }
         return { changed: false, reason: "duplicate_issue_event" };
       }
     }
 
     const sequence = (existing?.sequence || 0) + 1;
     const caldavUid = existing?.caldav_uid || `${event.id}@nostr-issues`;
+    const relayUrlsJson = mergeRelayUrls(existing?.relay_urls, relayUrl);
 
     upsertIssueStmt.run({
       event_id: event.id,
       pubkey: event.pubkey,
       relay_url: relayUrl,
+      relay_urls: relayUrlsJson,
       subject,
       body,
       labels: labelsJson,
@@ -358,6 +382,7 @@ export function openDb(filePath) {
       event_id: issue.event_id,
       pubkey: issue.pubkey,
       relay_url: issue.relay_url,
+      relay_urls: issue.relay_urls || "[]",
       subject: issue.subject,
       body,
       labels: issue.labels || "[]",
@@ -511,16 +536,25 @@ export function openDb(filePath) {
     ).get(event.pubkey, event.kind, dTag);
 
     if (existing && (existing.nostr_updated || 0) >= (event.created_at || 0)) {
+      // Still accumulate relay_urls even when content is stale/unchanged.
+      if (relayUrl) {
+        const merged = mergeRelayUrls(existing.relay_urls, relayUrl);
+        if (merged !== (existing.relay_urls || "[]")) {
+          db.prepare("UPDATE calendar_events SET relay_urls = ? WHERE pubkey = ? AND kind = ? AND d_tag = ?")
+            .run(merged, event.pubkey, event.kind, dTag);
+        }
+      }
       return { changed: false, reason: "stale_calendar_event" };
     }
 
     const sequence = (existing?.sequence || 0) + 1;
     const caldavUid = existing?.caldav_uid || `${event.id}@nostr-calendar`;
+    const relayUrlsJson = mergeRelayUrls(existing?.relay_urls, relayUrl);
 
     if (existing) {
       db.prepare(`
         UPDATE calendar_events SET
-          event_id = @event_id, relay_url = @relay_url,
+          event_id = @event_id, relay_url = @relay_url, relay_urls = @relay_urls,
           title = @title, description = @description,
           start_at = @start_at, end_at = @end_at,
           start_date = @start_date, end_date = @end_date,
@@ -532,6 +566,7 @@ export function openDb(filePath) {
       `).run({
         event_id: event.id,
         relay_url: relayUrl,
+        relay_urls: relayUrlsJson,
         title, description,
         start_at: startAt, end_at: endAt,
         start_date: startDate, end_date: endDate,
@@ -549,13 +584,13 @@ export function openDb(filePath) {
     } else {
       db.prepare(`
         INSERT INTO calendar_events (
-          event_id, pubkey, kind, relay_url, d_tag,
+          event_id, pubkey, kind, relay_url, relay_urls, d_tag,
           title, description,
           start_at, end_at, start_date, end_date,
           start_tzid, end_tzid, location, is_all_day, labels,
           created_at, caldav_uid, caldav_etag, sequence, last_modified, nostr_updated
         ) VALUES (
-          @event_id, @pubkey, @kind, @relay_url, @d_tag,
+          @event_id, @pubkey, @kind, @relay_url, @relay_urls, @d_tag,
           @title, @description,
           @start_at, @end_at, @start_date, @end_date,
           @start_tzid, @end_tzid, @location, @is_all_day, @labels,
@@ -566,6 +601,7 @@ export function openDb(filePath) {
         pubkey: event.pubkey,
         kind: event.kind,
         relay_url: relayUrl,
+        relay_urls: relayUrlsJson,
         d_tag: dTag,
         title, description,
         start_at: startAt, end_at: endAt,

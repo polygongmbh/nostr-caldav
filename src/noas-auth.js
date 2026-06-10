@@ -13,16 +13,31 @@ function normalizeApiPrefix(value) {
   return withLeading.replace(/\/+$/, "");
 }
 
+function normalizeRelayUrl(value) {
+  const raw = String(value || "").trim().toLowerCase().replace(/\/+$/, "");
+  if (!raw) return null;
+  if (raw.startsWith("wss://") || raw.startsWith("ws://")) return raw;
+  return `wss://${raw}`;
+}
+
 function parseHandle(handle) {
   const raw = String(handle || "").trim().toLowerCase();
-  const at = raw.indexOf("@");
-  if (at <= 0 || at === raw.length - 1) {
+  const firstAt = raw.indexOf("@");
+  if (firstAt <= 0 || firstAt === raw.length - 1) {
     throw new Error("Expected NOAS handle in form username@domain");
   }
-  return {
-    username: raw.slice(0, at),
-    domain: raw.slice(at + 1)
-  };
+  const username = raw.slice(0, firstAt);
+  const rest = raw.slice(firstAt + 1);
+  const secondAt = rest.indexOf("@");
+  if (secondAt <= 0) {
+    return { username, domain: rest, relayFilter: null };
+  }
+  const domain = rest.slice(0, secondAt);
+  const relay = rest.slice(secondAt + 1);
+  if (!domain || !relay) {
+    throw new Error("Expected NOAS handle in form username@domain or username@domain@relay");
+  }
+  return { username, domain, relayFilter: normalizeRelayUrl(relay) };
 }
 
 function sha256Hex(value) {
@@ -100,9 +115,9 @@ export function createNoasAuthProvider(noasConfig, options = {}) {
 
   async function getAuthContext(handle, password) {
     if (!enabled) return null;
-    const { username, domain } = parseHandle(handle);
+    const { username, domain, relayFilter } = parseHandle(handle);
     const passwordHash = sha256Hex(password);
-    const cacheKey = `${username}@${domain}:${passwordHash}`;
+    const cacheKey = `${username}@${domain}:${relayFilter || ""}:${passwordHash}`;
     const now = Date.now();
     let session = cache.get(cacheKey);
 
@@ -130,19 +145,28 @@ export function createNoasAuthProvider(noasConfig, options = {}) {
       }
     }
 
+    // Use the full handle (including relay) as the principal username so that
+    // relay-filtered accounts get their own calendar home URL and don't collide
+    // with the base account in CalDAV clients.
+    const principalUsername = relayFilter
+      ? `${session.handle}@${relayFilter.replace(/^wss?:\/\//, "")}`
+      : session.handle;
+
     return {
       principal: {
-        username: session.handle,
+        username: principalUsername,
         password: "__noas_external__",
         pubkeys: [session.publicKey],
-        calendars: []
+        calendars: [],
+        relayFilter: relayFilter || null
       },
       signer,
       noas: {
         handle: session.handle,
         username: session.username,
         domain: session.domain,
-        baseUrl: session.baseUrl
+        baseUrl: session.baseUrl,
+        relayFilter: relayFilter || null
       }
     };
   }
