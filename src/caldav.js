@@ -4,6 +4,7 @@ import { issueToVtodo, calendarEventToVevent } from "./ics.js";
 import { processVtodoCreate, processVtodoPut, runReportQuery } from "./caldav-core.js";
 import {
   buildPrincipalCalendars,
+  buildCalendarEventCals,
   findCalendarForPrincipal,
   issueVisibleToPrincipal,
   issueVisibleInCalendar,
@@ -119,6 +120,19 @@ function resolveChannelTags(db, principal) {
   return [];
 }
 
+function resolveCalendarEventCombos(db) {
+  if (typeof db?.listDistinctCalendarEventTagCombinations !== "function") return [];
+  return db.listDistinctCalendarEventTagCombinations();
+}
+
+function resolveVisibleCalEvCals(db, principal) {
+  const all = buildCalendarEventCals(resolveCalendarEventCombos(db));
+  if (!principal?.relayFilter) return all;
+  return all.filter((cal) =>
+    listCalendarEventsForCalendar(db, cal).some((ev) => calendarEventVisibleToPrincipal(ev, principal))
+  );
+}
+
 function listVisibleIssuesForCalendar(db, principal, calendar) {
   return withPrincipalVisibility(listIssuesForCalendar(db, calendar), principal, db);
 }
@@ -173,7 +187,14 @@ function rowItem(row) {
   return row.calendarEvent || row.issue || row.item || row;
 }
 
-function multistatusForCollection(_baseUrl, user, calendarId, token, rows) {
+function calendarComponentSetXml(calendar) {
+  if (calendar?.isCalendarEventCalendar) {
+    return `<c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set>`;
+  }
+  return `<c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set>`;
+}
+
+function multistatusForCollection(_baseUrl, user, calendarId, token, rows, calendar = null) {
   const calendarHref = `${calendarPath(user, calendarId)}`;
   const responses = rows
     .map((row) => {
@@ -207,10 +228,7 @@ function multistatusForCollection(_baseUrl, user, calendarId, token, rows) {
           <d:supported-report><d:report><c:calendar-query/></d:report></d:supported-report>
           <d:supported-report><d:report><d:sync-collection/></d:report></d:supported-report>
         </d:supported-report-set>
-        <c:supported-calendar-component-set>
-          <c:comp name="VTODO"/>
-          <c:comp name="VEVENT"/>
-        </c:supported-calendar-component-set>
+        ${calendarComponentSetXml(calendar)}
         <cs:getctag>${token}</cs:getctag>
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
@@ -235,10 +253,7 @@ function multistatusForPrincipal(_baseUrl, principal, calendars) {
           <d:supported-report><d:report><c:calendar-query/></d:report></d:supported-report>
           <d:supported-report><d:report><d:sync-collection/></d:report></d:supported-report>
         </d:supported-report-set>
-        <c:supported-calendar-component-set>
-          <c:comp name="VTODO"/>
-          <c:comp name="VEVENT"/>
-        </c:supported-calendar-component-set>
+        ${calendarComponentSetXml(cal)}
       </d:prop>
       <d:status>HTTP/1.1 200 OK</d:status>
     </d:propstat>
@@ -320,9 +335,30 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
   app.use(principalAuth(principals, noasAuthProvider, onAuthenticatedContext));
 
   app.options("*", (_req, res) => {
-    res.set("Allow", "OPTIONS, PROPFIND, REPORT, GET, PUT, DELETE");
+    res.set("Allow", "OPTIONS, PROPFIND, PROPPATCH, REPORT, GET, PUT, DELETE");
     res.set("DAV", "1, calendar-access");
     return res.status(200).end();
+  });
+
+  // Apple Calendar sends PROPPATCH to persist color/name preferences after discovering
+  // a new calendar. Return 207 accepting all properties so it proceeds to sync events.
+  app.use("/calendars/:user/:calendarId/", (req, res, next) => {
+    if (req.method !== "PROPPATCH") return next();
+    const href = `/calendars/${req.params.user}/${req.params.calendarId}/`;
+    return xmlResponse(
+      res,
+      207,
+      `<?xml version="1.0" encoding="utf-8" ?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response>
+    <d:href>${xmlEscape(href)}</d:href>
+    <d:propstat>
+      <d:prop/>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>`
+    );
   });
 
   app.use((req, res, next) => {
@@ -349,7 +385,8 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       ...calendarOptions,
       channelTags
     });
-    const calendars = applyListVisibilityRules(db, principal, discoveredCalendars);
+    const calEvCals = resolveVisibleCalEvCals(db, principal);
+    const calendars = [...applyListVisibilityRules(db, principal, discoveredCalendars), ...calEvCals];
     const visibleCount = withPrincipalVisibility(db.listIssues(), principal, db).length;
     return res.status(200).json({
       generated_at: new Date().toISOString(),
@@ -379,7 +416,8 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       ...calendarOptions,
       channelTags: resolveChannelTags(db, principal)
     });
-    const calendars = applyListVisibilityRules(db, principal, discoveredCalendars);
+    const calEvCals = resolveVisibleCalEvCals(db, principal);
+    const calendars = [...applyListVisibilityRules(db, principal, discoveredCalendars), ...calEvCals];
     if (normalizedPath.match(/^\/calendars\/[^/]+$/)) {
       const summary = summarizeCalendars(calendars);
       console.log(
@@ -436,13 +474,14 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, {
       ...calendarOptions,
       channelTags: resolveChannelTags(db, principal),
+      calendarEventCombos: resolveCalendarEventCombos(db),
       db
     });
     if (!calendar) {
       return res.status(404).send("Not found");
     }
 
-    const baseIssues = listVisibleIssuesForCalendar(db, principal, calendar);
+    const baseIssues = calendar?.isCalendarEventCalendar ? [] : listVisibleIssuesForCalendar(db, principal, calendar);
     const baseCalEvents = listCalendarEventsForCalendar(db, calendar).filter((ev) =>
       calendarEventVisibleToPrincipal(ev, principal)
     );
@@ -471,7 +510,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
       } issues=${baseIssues.length} calEvents=${baseCalEvents.length} rows=${rows.length}`
     );
 
-    return xmlResponse(res, 207, multistatusForCollection(caldavConfig.baseUrl, principal.username, calendarId, syncToken, rows));
+    return xmlResponse(res, 207, multistatusForCollection(caldavConfig.baseUrl, principal.username, calendarId, syncToken, rows, calendar));
   });
 
   app.get(/^\/calendars\/([^/]+)\/([^/]+)\/([^/]+)\.ics$/, (req, res) => {
@@ -488,6 +527,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, {
       ...calendarOptions,
       channelTags: resolveChannelTags(db, principal),
+      calendarEventCombos: resolveCalendarEventCombos(db),
       db
     });
     if (!calendar) return res.status(404).send("Not found");
@@ -533,6 +573,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     const calendar = findCalendarForPrincipal(principal, trackedPubkeys, calendarId, {
       ...calendarOptions,
       channelTags: resolveChannelTags(db, principal),
+      calendarEventCombos: resolveCalendarEventCombos(db),
       db
     });
     if (!calendar) {

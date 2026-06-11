@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildPrincipalCalendars,
+  buildCalendarEventCals,
   issueVisibleInCalendar,
   issueVisibleToPrincipal,
   calendarEventVisibleToPrincipal,
@@ -303,6 +304,12 @@ test("issueVisibleToPrincipal: relayFilter matches via relay_urls JSON array", (
     issueVisibleToPrincipal({ ...base, relay_url: null, relay_urls: null }, principal),
     false, "issue with no relay info should be hidden"
   );
+
+  // relay_url = "multi-relay" with no relay_urls → hidden for issues (no bypass)
+  assert.equal(
+    issueVisibleToPrincipal({ ...base, relay_url: "multi-relay", relay_urls: null }, principal),
+    false, "multi-relay placeholder without relay_urls data should hide issue from relay-filtered principal"
+  );
 });
 
 test("issueVisibleToPrincipal: relay URL trailing slash is normalized for comparison", () => {
@@ -365,6 +372,11 @@ test("calendarEventVisibleToPrincipal: relayFilter uses relay_urls array and fal
     calendarEventVisibleToPrincipal({ relay_url: null, relay_urls: null }, principal),
     false, "no relay info hides event"
   );
+  // relay_url = "multi-relay" with no relay_urls → hidden (no relay attribution, strict filter)
+  assert.equal(
+    calendarEventVisibleToPrincipal({ relay_url: "multi-relay", relay_urls: null }, principal),
+    false, "legacy multi-relay placeholder has no per-relay attribution and is hidden from relay-filtered accounts"
+  );
 });
 
 test("calendarEventVisibleToPrincipal: no relayFilter passes all events", () => {
@@ -399,4 +411,51 @@ test("issueVisibleToPrincipal allows children of visible parent tasks", () => {
     }),
     true
   );
+});
+
+test("buildCalendarEventCals creates one calendar per tag combination", () => {
+  const cals = buildCalendarEventCals([["nodex", "dev"], ["nodex"], ["nostr", "dev"]]);
+  const ids = cals.map((c) => c.id);
+  assert.ok(ids.includes("calev-dev-nodex"), "#nodex #dev calendar");
+  assert.ok(ids.includes("calev-nodex"), "#nodex calendar");
+  assert.ok(ids.includes("calev-dev-nostr"), "#nostr #dev calendar");
+  assert.equal(ids.length, 3);
+});
+
+test("buildCalendarEventCals creates calev-other for empty tag combo", () => {
+  const cals = buildCalendarEventCals([[]]);
+  assert.equal(cals.length, 1);
+  assert.equal(cals[0].id, "calev-other");
+  assert.equal(cals[0].name, "Other Events");
+  assert.equal(cals[0].isCalendarEventCalendar, true);
+});
+
+test("buildCalendarEventCals combo calendars have exactTags filter and isCalendarEventCalendar", () => {
+  const cals = buildCalendarEventCals([["dev", "nodex"]]);
+  assert.equal(cals.length, 1);
+  assert.deepEqual(cals[0].filter.exactTags, ["dev", "nodex"]);
+  assert.equal(cals[0].isCalendarEventCalendar, true);
+});
+
+test("applyListVisibilityRules is unaffected by isCalendarEventCalendar flag — drops cals with no issues", () => {
+  const comboCal = {
+    id: "calev-dev",
+    name: "#dev",
+    filter: { exactTags: ["dev"] },
+    isCalendarEventCalendar: true
+  };
+
+  const db = {
+    listIssuesFiltered() { return []; },
+    listCalendarEventsFiltered() { return []; },
+    getIssueByEventId() { return null; },
+    issueHasSubtasks() { return false; }
+  };
+
+  const principal = { username: "me", pubkeys: ["a".repeat(64)] };
+  const result = applyListVisibilityRules(db, principal, [comboCal]);
+
+  // applyListVisibilityRules only cares about issues; it will drop this calendar since it has none.
+  // Calev calendars are combined AFTER applyListVisibilityRules in caldav.js, not inside it.
+  assert.equal(result.length, 0, "applyListVisibilityRules drops anything with no open issues");
 });

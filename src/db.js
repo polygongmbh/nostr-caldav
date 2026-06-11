@@ -142,6 +142,21 @@ export function openDb(filePath) {
   ensureColumn(db, "issues", "relay_urls", "TEXT");
   ensureColumn(db, "calendar_events", "relay_urls", "TEXT");
 
+  // Normalize calendar_events.labels to sorted JSON arrays for exact-match queries.
+  db.transaction(() => {
+    const rows = db.prepare("SELECT rowid, labels FROM calendar_events WHERE labels IS NOT NULL").all();
+    const update = db.prepare("UPDATE calendar_events SET labels = ? WHERE rowid = ?");
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.labels || "[]");
+        if (!Array.isArray(parsed)) continue;
+        const sorted = parsed.map((v) => String(v || "").trim().toLowerCase()).filter(Boolean).sort();
+        const normalized = JSON.stringify(sorted);
+        if (normalized !== row.labels) update.run(normalized, row.rowid);
+      } catch {}
+    }
+  })();
+
   const getIssueByEventIdStmt = db.prepare("SELECT * FROM issues WHERE event_id = ?");
   const getIssueByUidStmt = db.prepare("SELECT * FROM issues WHERE caldav_uid = ?");
   const listIssuesStmt = db.prepare("SELECT * FROM issues ORDER BY created_at DESC");
@@ -520,7 +535,7 @@ export function openDb(filePath) {
     const startTzid = findFirstTag(event.tags, "start_tzid");
     const endTzid = findFirstTag(event.tags, "end_tzid");
     const location = findFirstTag(event.tags, "location");
-    const labels = uniq(listTagValues(event.tags, "t").map((v) => String(v || "").trim().toLowerCase()));
+    const labels = uniq(listTagValues(event.tags, "t").map((v) => String(v || "").trim().toLowerCase())).sort();
 
     const isAllDay = event.kind === CALENDAR_EVENT_DATE_KIND ? 1 : 0;
     const startAt = isAllDay ? null : (startTag ? Number(startTag) : null);
@@ -632,7 +647,7 @@ export function openDb(filePath) {
     return db.prepare("SELECT * FROM calendar_events WHERE event_id = ?").get(eventId);
   }
 
-  function listCalendarEventsFiltered({ pubkeys, tags } = {}) {
+  function listCalendarEventsFiltered({ pubkeys, tags, exactTags } = {}) {
     let query = "SELECT * FROM calendar_events";
     const where = [];
     const params = {};
@@ -643,7 +658,15 @@ export function openDb(filePath) {
       names.forEach((name, idx) => { params[name] = pubkeys[idx]; });
     }
 
-    if (Array.isArray(tags) && tags.length > 0) {
+    if (exactTags !== undefined) {
+      const sorted = [...(Array.isArray(exactTags) ? exactTags : [])].sort();
+      if (sorted.length === 0) {
+        where.push("(labels IS NULL OR labels = '[]' OR labels = '')");
+      } else {
+        params.exact_labels = JSON.stringify(sorted);
+        where.push("labels = @exact_labels");
+      }
+    } else if (Array.isArray(tags) && tags.length > 0) {
       const clauses = tags.map((_, idx) => `labels LIKE @tag_${idx}`);
       where.push(`(${clauses.join(" OR ")})`);
       tags.forEach((tag, idx) => { params[`tag_${idx}`] = `%"${tag}"%`; });
@@ -655,6 +678,28 @@ export function openDb(filePath) {
 
     query += " ORDER BY COALESCE(start_at, 0) DESC, start_date DESC";
     return db.prepare(query).all(params);
+  }
+
+  function listDistinctCalendarEventTagCombinations() {
+    const rows = db.prepare("SELECT DISTINCT labels FROM calendar_events WHERE labels IS NOT NULL").all();
+    const seen = new Set();
+    const result = [];
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.labels || "[]");
+        if (!Array.isArray(parsed)) continue;
+        const sorted = parsed.map((v) => String(v || "").trim().toLowerCase()).filter(Boolean).sort();
+        const key = JSON.stringify(sorted);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(sorted);
+      } catch {}
+    }
+    return result.sort((a, b) => {
+      const aKey = a.join("\x00");
+      const bKey = b.join("\x00");
+      return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
+    });
   }
 
   function listDistinctChannelTags() {
@@ -726,6 +771,7 @@ export function openDb(filePath) {
     getCalendarEventByUid,
     getCalendarEventByEventId,
     listCalendarEventsFiltered,
+    listDistinctCalendarEventTagCombinations,
     bumpSyncToken,
     logSync,
     close: () => db.close()

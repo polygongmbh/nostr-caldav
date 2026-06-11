@@ -6,7 +6,7 @@ import path from "node:path";
 import { openDb } from "../src/db.js";
 import { calendarEventToVevent } from "../src/ics.js";
 import { runReportQuery } from "../src/caldav-core.js";
-import { listCalendarEventsForCalendar, calendarEventVisibleToPrincipal } from "../src/caldav-calendars.js";
+import { listCalendarEventsForCalendar, calendarEventVisibleToPrincipal, buildCalendarEventCals } from "../src/caldav-calendars.js";
 
 function mkDbPath() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nostr-caldav-cal-"));
@@ -231,21 +231,25 @@ test("calendarEventToVevent produces DATE-type DTSTART for all-day event", () =>
 
 // ── caldav-calendars: helpers ─────────────────────────────────────────────────
 
-test("listCalendarEventsForCalendar returns events matching calendar filter", () => {
+test("listCalendarEventsForCalendar returns events for isCalendarEventCalendar calendar", () => {
   const db = openDb(mkDbPath());
   db.upsertCalendarEventFromNostr(makeTimedEvent(), "wss://relay.example");
 
-  const events = listCalendarEventsForCalendar(db, { filter: { pubkeys: [PUBKEY] } });
+  const events = listCalendarEventsForCalendar(db, {
+    filter: { exactTags: ["planning", "work"] },
+    isCalendarEventCalendar: true
+  });
   assert.equal(events.length, 1);
 
   db.close();
 });
 
-test("listCalendarEventsForCalendar returns empty for unknown pubkey", () => {
+test("listCalendarEventsForCalendar returns empty for non-combo calendar", () => {
   const db = openDb(mkDbPath());
   db.upsertCalendarEventFromNostr(makeTimedEvent(), "wss://relay.example");
 
-  const events = listCalendarEventsForCalendar(db, { filter: { pubkeys: ["c".repeat(64)] } });
+  // A channel (issue) calendar without isCalendarEventCalendar should return no events
+  const events = listCalendarEventsForCalendar(db, { filter: { tags: ["work"] } });
   assert.equal(events.length, 0);
 
   db.close();
@@ -383,6 +387,169 @@ test("runReportQuery sync-collection excludes cal events when token is current",
   });
 
   assert.equal(result.calendarEvents.length, 0, "no updates when client token matches server token");
+
+  db.close();
+});
+
+// ── Tag combination calendars ─────────────────────────────────────────────────
+
+test("listDistinctCalendarEventTagCombinations returns unique sorted combos", () => {
+  const db = openDb(mkDbPath());
+
+  // Event with tags #work #planning (stored sorted: ["planning","work"])
+  db.upsertCalendarEventFromNostr(makeTimedEvent(), "wss://relay.example");
+  // Event with single tag #holiday
+  db.upsertCalendarEventFromNostr(makeDateEvent({ id: "2".repeat(64) }), "wss://relay.example");
+  // Another event with same combo as first (should not create duplicate)
+  db.upsertCalendarEventFromNostr(
+    makeTimedEvent({ id: "3".repeat(64), tags: [["d", "planning-2027"], ["title", "Q2"], ["start", "1751400001"], ["end", "1751403601"], ["t", "planning"], ["t", "work"]] }),
+    "wss://relay.example"
+  );
+
+  const combos = db.listDistinctCalendarEventTagCombinations();
+  assert.equal(combos.length, 2, "should have exactly 2 distinct combos");
+
+  const comboStrings = combos.map((c) => c.join(","));
+  assert.ok(comboStrings.includes("holiday"), "holiday combo should be present");
+  assert.ok(comboStrings.includes("planning,work"), "planning,work combo should be present");
+
+  db.close();
+});
+
+test("listDistinctCalendarEventTagCombinations returns empty combo for untagged events", () => {
+  const db = openDb(mkDbPath());
+
+  db.upsertCalendarEventFromNostr(
+    makeTimedEvent({ id: "u".repeat(64), tags: [["d", "untagged"], ["title", "No Tags"], ["start", "1751400000"], ["end", "1751403600"]] }),
+    "wss://relay.example"
+  );
+
+  const combos = db.listDistinctCalendarEventTagCombinations();
+  assert.equal(combos.length, 1);
+  assert.deepEqual(combos[0], [], "untagged event should produce empty combo");
+
+  db.close();
+});
+
+test("listCalendarEventsFiltered with exactTags returns only exact matches", () => {
+  const db = openDb(mkDbPath());
+
+  // Event tagged #planning #work
+  db.upsertCalendarEventFromNostr(makeTimedEvent(), "wss://relay.example");
+  // Event tagged #holiday only
+  db.upsertCalendarEventFromNostr(makeDateEvent({ id: "2".repeat(64) }), "wss://relay.example");
+
+  // Exact match for ["planning","work"] should return only the timed event
+  const planningWork = db.listCalendarEventsFiltered({ exactTags: ["planning", "work"] });
+  assert.equal(planningWork.length, 1);
+  assert.equal(planningWork[0].d_tag, "planning-2026");
+
+  // Exact match for ["holiday"] returns only the date event
+  const holiday = db.listCalendarEventsFiltered({ exactTags: ["holiday"] });
+  assert.equal(holiday.length, 1);
+  assert.equal(holiday[0].d_tag, "holiday-2026-07-04");
+
+  // Exact match for ["work"] alone returns nothing (event has two tags)
+  const workOnly = db.listCalendarEventsFiltered({ exactTags: ["work"] });
+  assert.equal(workOnly.length, 0, "partial tag match should return nothing with exactTags");
+
+  db.close();
+});
+
+test("listCalendarEventsFiltered with exactTags=[] returns only untagged events", () => {
+  const db = openDb(mkDbPath());
+
+  db.upsertCalendarEventFromNostr(makeTimedEvent(), "wss://relay.example");
+  db.upsertCalendarEventFromNostr(
+    makeTimedEvent({ id: "u".repeat(64), tags: [["d", "untagged"], ["title", "No Tags"], ["start", "1751400000"], ["end", "1751403600"]] }),
+    "wss://relay.example"
+  );
+
+  const untagged = db.listCalendarEventsFiltered({ exactTags: [] });
+  assert.equal(untagged.length, 1);
+  assert.equal(untagged[0].d_tag, "untagged");
+
+  db.close();
+});
+
+test("buildCalendarEventCals creates one calendar per tag combination", () => {
+  const calendars = buildCalendarEventCals([["nodex", "dev"], ["nodex"], ["nostr", "dev"]]);
+  const ids = calendars.map((c) => c.id);
+  assert.ok(ids.includes("calev-dev-nodex"), "#nodex #dev calendar");
+  assert.ok(ids.includes("calev-nodex"), "#nodex calendar");
+  assert.ok(ids.includes("calev-dev-nostr"), "#nostr #dev calendar");
+  assert.equal(ids.length, 3);
+});
+
+test("buildCalendarEventCals creates calev-other for empty tag combo", () => {
+  const calendars = buildCalendarEventCals([[]]);
+  assert.equal(calendars.length, 1);
+  assert.equal(calendars[0].id, "calev-other");
+  assert.equal(calendars[0].name, "Other Events");
+  assert.ok(calendars[0].isCalendarEventCalendar);
+});
+
+test("buildCalendarEventCals combo calendars have exactTags filter", () => {
+  const calendars = buildCalendarEventCals([["dev", "nodex"]]);
+  const cal = calendars[0];
+  assert.deepEqual(cal.filter.exactTags, ["dev", "nodex"]);
+  assert.equal(cal.isCalendarEventCalendar, true);
+});
+
+test("listCalendarEventsForCalendar returns events only for isCalendarEventCalendar calendars", () => {
+  const db = openDb(mkDbPath());
+  db.upsertCalendarEventFromNostr(makeTimedEvent(), "wss://relay.example");
+
+  // Regular channel calendar — should return no events
+  const channelCal = { id: "channel-work", filter: { tags: ["work"] } };
+  assert.equal(listCalendarEventsForCalendar(db, channelCal).length, 0, "channel calendar should not return cal events");
+
+  // Combo calendar — should return matching events
+  const comboCal = { id: "calev-planning-work", filter: { exactTags: ["planning", "work"] }, isCalendarEventCalendar: true };
+  assert.equal(listCalendarEventsForCalendar(db, comboCal).length, 1, "combo calendar should return matching events");
+
+  db.close();
+});
+
+test("each event appears in exactly one combo calendar", () => {
+  const db = openDb(mkDbPath());
+
+  // Three events with distinct tag combos
+  db.upsertCalendarEventFromNostr(makeTimedEvent(), "wss://relay.example"); // #planning #work
+  db.upsertCalendarEventFromNostr(makeDateEvent({ id: "2".repeat(64) }), "wss://relay.example"); // #holiday
+  db.upsertCalendarEventFromNostr(
+    makeTimedEvent({ id: "3".repeat(64), tags: [["d", "meeting"], ["title", "Team Meeting"], ["start", "1751400001"], ["end", "1751403601"], ["t", "work"]] }),
+    "wss://relay.example"
+  ); // #work only
+
+  const combos = db.listDistinctCalendarEventTagCombinations();
+  const calendars = buildCalendarEventCals(combos);
+
+  // Count total event appearances across all calendars
+  let totalAppearances = 0;
+  for (const cal of calendars) {
+    totalAppearances += listCalendarEventsForCalendar(db, cal).length;
+  }
+
+  assert.equal(totalAppearances, 3, "each event should appear in exactly one calendar");
+});
+
+test("labels are stored sorted for consistent exact matching", () => {
+  const db = openDb(mkDbPath());
+
+  // Insert with tags in reverse order
+  db.upsertCalendarEventFromNostr(
+    makeTimedEvent({ tags: [["d", "rev"], ["title", "Rev"], ["start", "1751400000"], ["end", "1751403600"], ["t", "work"], ["t", "planning"]] }),
+    "wss://relay.example"
+  );
+
+  const stored = db.getCalendarEventByUid(`${"e".repeat(64)}@nostr-calendar`);
+  const labels = JSON.parse(stored.labels);
+  assert.deepEqual(labels, ["planning", "work"], "labels should be stored in sorted order");
+
+  // Should be findable by sorted exactTags regardless of insertion order
+  const found = db.listCalendarEventsFiltered({ exactTags: ["work", "planning"] });
+  assert.equal(found.length, 1, "exactTags should match regardless of query order");
 
   db.close();
 });

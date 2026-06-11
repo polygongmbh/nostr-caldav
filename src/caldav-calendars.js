@@ -3,12 +3,10 @@ function normalizeStoredRelayUrl(value) {
 }
 
 function relayMatchesFilter(relayUrls, relayUrl, relayFilter) {
-  // Check the JSON array of all relays this event was seen from.
   try {
     const arr = JSON.parse(relayUrls || "[]");
     if (Array.isArray(arr) && arr.some((u) => normalizeStoredRelayUrl(u) === relayFilter)) return true;
   } catch {}
-  // Fallback: check the legacy single relay_url column.
   return normalizeStoredRelayUrl(relayUrl) === relayFilter;
 }
 
@@ -44,18 +42,16 @@ function normalizeHandle(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+// Builds issue/task calendars only. Unchanged from original.
 export function buildPrincipalCalendars(principal, trackedPubkeys, options = {}) {
-  const principalPubkeys = Array.isArray(principal.pubkeys) ? principal.pubkeys : [];
   const includeAutoPubkeyCalendars = options.includeAutoPubkeyCalendars !== false;
   const channelTags = Array.isArray(options.channelTags) ? options.channelTags : [];
 
   const autoPubkeyCalendars = includeAutoPubkeyCalendars
     ? (trackedPubkeys || []).map((pubkey) => ({
-    id: `pubkey-${pubkey.slice(0, 12)}`,
-    name: `Issues by ${pubkey.slice(0, 12)}`,
-      filter: {
-      pubkeys: [pubkey]
-    }
+        id: `pubkey-${pubkey.slice(0, 12)}`,
+        name: `Issues by ${pubkey.slice(0, 12)}`,
+        filter: { pubkeys: [pubkey] }
       }))
     : [];
 
@@ -63,8 +59,7 @@ export function buildPrincipalCalendars(principal, trackedPubkeys, options = {})
     id: sanitizeId(cal.id || cal.name),
     name: cal.name || cal.id || "Filtered",
     filter: {
-      pubkeys:
-        cal.pubkeys || [],
+      pubkeys: cal.pubkeys || [],
       labels: cal.labels || [],
       statuses: cal.statuses || [],
       text: cal.text || null
@@ -74,9 +69,7 @@ export function buildPrincipalCalendars(principal, trackedPubkeys, options = {})
   const channelCalendars = channelTags.map((tag) => ({
     id: `channel-${sanitizeId(tag)}`,
     name: `#${tag}`,
-    filter: {
-      tags: [tag]
-    },
+    filter: { tags: [tag] },
     channelTag: tag
   }));
 
@@ -87,10 +80,32 @@ export function buildPrincipalCalendars(principal, trackedPubkeys, options = {})
   ]);
 }
 
+// Builds calendar-event calendars from distinct tag combinations.
+// Completely separate from issue calendars.
+export function buildCalendarEventCals(calendarEventCombos) {
+  if (!Array.isArray(calendarEventCombos)) return [];
+  return calendarEventCombos.map((combo) => {
+    const sorted = [...combo].sort();
+    const name = sorted.length > 0 ? sorted.map((t) => `#${t}`).join(" ") : "Other Events";
+    const id = sorted.length > 0 ? `calev-${sorted.map(sanitizeId).join("-")}` : "calev-other";
+    return {
+      id,
+      name,
+      filter: { exactTags: sorted },
+      isCalendarEventCalendar: true
+    };
+  });
+}
+
 export function findCalendarForPrincipal(principal, trackedPubkeys, calendarId, options = {}) {
   const calendars = buildPrincipalCalendars(principal, trackedPubkeys, options);
   const found = calendars.find((cal) => cal.id === calendarId);
   if (found) return found;
+
+  // Check calendar-event calendars separately.
+  const calEvCals = buildCalendarEventCals(options.calendarEventCombos || []);
+  const foundCalEv = calEvCals.find((cal) => cal.id === calendarId);
+  if (foundCalEv) return foundCalEv;
 
   if (calendarId === "other-tasks" && options.db) {
     const visible = applyListVisibilityRules(options.db, principal, calendars);
@@ -129,21 +144,11 @@ export function listIssuesForCalendar(db, calendar) {
   return db.listIssuesFiltered(calendar?.filter || {});
 }
 
+// Only returns events for dedicated calendar-event calendars (isCalendarEventCalendar: true).
+// Issue/channel calendars return [] — events appear once in their exact-tag calendar only.
 export function listCalendarEventsForCalendar(db, calendar) {
   if (typeof db?.listCalendarEventsFiltered !== "function") return [];
-  if (calendar?.isOtherTasks && Array.isArray(calendar.collectedCalendars)) {
-    const seen = new Set();
-    const result = [];
-    for (const col of calendar.collectedCalendars) {
-      for (const event of db.listCalendarEventsFiltered(col.filter || {})) {
-        if (!seen.has(event.event_id)) {
-          seen.add(event.event_id);
-          result.push(event);
-        }
-      }
-    }
-    return result;
-  }
+  if (!calendar?.isCalendarEventCalendar) return [];
   return db.listCalendarEventsFiltered(calendar?.filter || {});
 }
 
@@ -163,6 +168,7 @@ function visibleIssuesForCalendar(db, principal, calendar) {
   });
 }
 
+// Unchanged from original — issue-centric only, knows nothing about calev calendars.
 export function applyListVisibilityRules(db, principal, calendars) {
   const large = [];
   const small = [];
