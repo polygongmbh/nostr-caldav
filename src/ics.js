@@ -129,6 +129,12 @@ export function issueToVtodo(issue) {
     `URL:${escapeIcs(url)}`
   ];
 
+  if (issue.due_date) {
+    lines.push(`DUE;VALUE=DATE:${String(issue.due_date).replace(/-/g, "")}`);
+  } else if (issue.due_at) {
+    lines.push(`DUE:${toUtcStamp(issue.due_at)}`);
+  }
+
   if (isClosed) {
     // Apple Reminders is more reliable when closed tasks include explicit completion markers.
     lines.push(`COMPLETED:${modified}`);

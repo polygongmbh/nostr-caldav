@@ -533,7 +533,8 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
     if (!calendar) return res.status(404).send("Not found");
 
     const calEvent = db.getCalendarEventByUid?.(uid);
-    if (calEvent && calendarEventVisibleToPrincipal(calEvent, principal)) {
+    const isTaskLinked = calEvent && String(calEvent.d_tag || "").startsWith("task-date-");
+    if (calEvent && !isTaskLinked && calendarEventVisibleToPrincipal(calEvent, principal)) {
       res.set("Content-Type", "text/calendar; charset=utf-8");
       res.set("ETag", calEvent.caldav_etag || `\"${calEvent.event_id}\"`);
       return res.status(200).send(calendarEventToVevent(calEvent));

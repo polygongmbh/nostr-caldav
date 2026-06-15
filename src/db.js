@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS issues (
   caldav_etag     TEXT,
   sequence        INTEGER DEFAULT 0,
   last_modified   INTEGER,
-  nostr_updated   INTEGER
+  nostr_updated   INTEGER,
+  due_at          INTEGER,
+  due_date        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sync_log (
@@ -140,6 +142,8 @@ export function openDb(filePath) {
   ensureColumn(db, "issues", "mention_handles", "TEXT");
   ensureColumn(db, "issues", "parent_event_id", "TEXT");
   ensureColumn(db, "issues", "relay_urls", "TEXT");
+  ensureColumn(db, "issues", "due_at", "INTEGER");
+  ensureColumn(db, "issues", "due_date", "TEXT");
   ensureColumn(db, "calendar_events", "relay_urls", "TEXT");
 
   // Normalize calendar_events.labels to sorted JSON arrays for exact-match queries.
@@ -154,6 +158,27 @@ export function openDb(filePath) {
         const normalized = JSON.stringify(sorted);
         if (normalized !== row.labels) update.run(normalized, row.rowid);
       } catch {}
+    }
+  })();
+
+  // Migrate due dates from task-linked calendar events into issues.due_at / due_date.
+  // Task-linked events use d_tag = "task-date-{issueId}-{type}" and are never shown
+  // in Calendar; their date belongs on the VTODO instead.
+  db.transaction(() => {
+    const linked = db.prepare(
+      "SELECT d_tag, start_at, start_date, is_all_day FROM calendar_events WHERE d_tag LIKE 'task-date-%'"
+    ).all();
+    const setDue = db.prepare(
+      "UPDATE issues SET due_at = @due_at, due_date = @due_date WHERE event_id = @event_id AND due_at IS NULL AND due_date IS NULL"
+    );
+    for (const row of linked) {
+      const match = String(row.d_tag || "").match(/^task-date-([0-9a-f]{64})-/);
+      if (!match) continue;
+      setDue.run({
+        event_id: match[1],
+        due_at: row.is_all_day ? null : (row.start_at || null),
+        due_date: row.is_all_day ? (row.start_date || null) : null
+      });
     }
   })();
 
@@ -335,6 +360,23 @@ export function openDb(filePath) {
 
     bumpSyncToken();
     logSync({ direction: "nostr_to_caldav", eventId: event.id, action: "upsert_issue" });
+
+    // If a task-linked calendar event arrived before this issue, pick up its due date now.
+    const inserted = getIssueByEventIdStmt.get(event.id);
+    if (inserted && inserted.due_at == null && inserted.due_date == null) {
+      const pendingCalEv = db.prepare(
+        "SELECT start_at, start_date, is_all_day FROM calendar_events WHERE d_tag LIKE ? LIMIT 1"
+      ).get(`task-date-${event.id}-%`);
+      if (pendingCalEv) {
+        db.prepare(
+          "UPDATE issues SET due_at = @due_at, due_date = @due_date WHERE event_id = @event_id"
+        ).run({
+          event_id: event.id,
+          due_at: pendingCalEv.is_all_day ? null : (pendingCalEv.start_at || null),
+          due_date: pendingCalEv.is_all_day ? (pendingCalEv.start_date || null) : null
+        });
+      }
+    }
   }
 
   function applyStatusEventFromNostr(statusEvent) {
@@ -543,6 +585,35 @@ export function openDb(filePath) {
     const startDate = isAllDay ? (startTag || null) : null;
     const endDate = isAllDay ? (endTag || null) : null;
 
+    // Task-linked calendar events carry a due/scheduled date for a kind-1621 issue.
+    // Detect them via the "e" tag with role "task" (set by Nodex) or the stable
+    // d_tag pattern "task-date-{issueId}-{type}". These should update the issue's
+    // due date and never appear as standalone calendar entries in the CalDAV Calendar.
+    const taskRefTag = (event.tags || []).find(
+      (tag) => tag[0] === "e" && tag[1] && tag[3] === "task"
+    );
+    const taskRefId = taskRefTag?.[1] || (() => {
+      const m = dTag.match(/^task-date-([0-9a-f]{64})-/);
+      return m ? m[1] : null;
+    })();
+
+    if (taskRefId) {
+      const issue = getIssueByEventIdStmt.get(taskRefId);
+      if (issue) {
+        db.prepare(
+          "UPDATE issues SET due_at = @due_at, due_date = @due_date WHERE event_id = @event_id"
+        ).run({
+          event_id: taskRefId,
+          due_at: isAllDay ? null : (startAt || null),
+          due_date: isAllDay ? (startDate || null) : null
+        });
+        bumpSyncToken();
+        logSync({ direction: "nostr_to_caldav", eventId: event.id, action: "set_issue_due_date" });
+      }
+      // Still store in calendar_events so the date isn't lost if the issue arrives later,
+      // but listCalendarEventsFiltered excludes task-date-* d_tags from Calendar.
+    }
+
     const title = titleTag || deriveIssueSubject(event.tags, event.content);
     const description = normalizedText(event.content);
 
@@ -649,7 +720,9 @@ export function openDb(filePath) {
 
   function listCalendarEventsFiltered({ pubkeys, tags, exactTags } = {}) {
     let query = "SELECT * FROM calendar_events";
-    const where = [];
+    // Task-linked events (d_tag = "task-date-{issueId}-{type}") are represented as
+    // VTODOs with a DUE date on the issue side — never expose them as Calendar VEVENTs.
+    const where = ["d_tag NOT LIKE 'task-date-%'"];
     const params = {};
 
     if (Array.isArray(pubkeys) && pubkeys.length > 0) {
@@ -681,7 +754,7 @@ export function openDb(filePath) {
   }
 
   function listDistinctCalendarEventTagCombinations() {
-    const rows = db.prepare("SELECT DISTINCT labels FROM calendar_events WHERE labels IS NOT NULL").all();
+    const rows = db.prepare("SELECT DISTINCT labels FROM calendar_events WHERE labels IS NOT NULL AND d_tag NOT LIKE 'task-date-%'").all();
     const seen = new Set();
     const result = [];
     for (const row of rows) {
