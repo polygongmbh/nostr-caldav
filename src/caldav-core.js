@@ -1,4 +1,4 @@
-import { parseVtodo } from "./ics.js";
+import { parseVtodo, parseVevent } from "./ics.js";
 import {
   detectReportType,
   extractRequestedProps,
@@ -115,6 +115,49 @@ export async function processVtodoPut({ db, syncService, uid, ifMatch, body, aut
     etag: refreshed.caldav_etag,
     changed: Boolean(update.changed)
   };
+}
+
+export async function processVeventCreate({ db, syncService, uid, body, calendarTags = [], authContext = null }) {
+  const existing = db.getCalendarEventByUid(uid);
+  if (existing) {
+    db.logSync({ direction: "caldav_to_nostr", eventId: uid, action: "vevent_create_conflict" });
+    return { status: 409, error: "UID already exists" };
+  }
+
+  const parsed = parseVevent(body || "");
+  const summary = String(parsed.summary || "").trim();
+  const description = String(parsed.description || "").trim();
+
+  if (!summary && !description) {
+    db.logSync({ direction: "caldav_to_nostr", eventId: uid, action: "vevent_create_missing_content" });
+    return { status: 400, error: "VEVENT SUMMARY is required" };
+  }
+
+  try {
+    const created = await syncService.createCalendarEventFromCaldav({
+      uid,
+      summary: summary || description.slice(0, 180),
+      description,
+      location: parsed.location || null,
+      labels: Array.isArray(parsed.labels) ? parsed.labels : [],
+      isAllDay: Boolean(parsed.isAllDay),
+      startDate: parsed.startDate || null,
+      endDate: parsed.endDate || null,
+      startAt: parsed.startAt ?? null,
+      endAt: parsed.endAt ?? null,
+      tagNames: calendarTags
+    }, { authContext });
+
+    if (created?.skipped) {
+      return { status: 502, error: "Failed to publish calendar event to relays" };
+    }
+
+    const calEvent = db.getCalendarEventByUid(uid);
+    return { status: 201, etag: calEvent?.caldav_etag || null, eventId: created.event.id };
+  } catch (error) {
+    db.logSync({ direction: "caldav_to_nostr", eventId: uid, action: "create_calendar_event_failed", error: String(error) });
+    return { status: 502, error: "Failed to publish calendar event to relays" };
+  }
 }
 
 export async function processVtodoCreate({ db, syncService, uid, body, channelTag = null, authContext = null }) {

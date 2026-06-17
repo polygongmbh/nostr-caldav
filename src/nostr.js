@@ -487,6 +487,43 @@ export function createNostrPublisher({ relays, signer, onauth }) {
       await Promise.any(pool.publish(relays, signed, { onauth: activeOnauth }));
       return { skipped: false, event: signed };
     },
+    async publishCalendarEventCreate({ uid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, tagNames, signer: signerOverride = null }) {
+      const activeSigner = signerOverride || signer;
+      const activeOnauth = activeSigner ? async (eventTemplate) => activeSigner.signEvent(eventTemplate) : onauth || undefined;
+      if (!activeSigner?.enabled) {
+        return { skipped: true, reason: "missing_signer" };
+      }
+
+      const kind = isAllDay ? CALENDAR_EVENT_DATE_KIND : CALENDAR_EVENT_TIME_KIND;
+      const tags = [
+        ["d", String(uid || "")],
+        ["title", String(summary || "")]
+      ];
+
+      if (isAllDay) {
+        if (startDate) tags.push(["start", startDate]);
+        if (endDate) tags.push(["end", endDate]);
+      } else {
+        if (startAt != null) tags.push(["start", String(startAt)]);
+        if (endAt != null) tags.push(["end", String(endAt)]);
+      }
+
+      if (location) tags.push(["location", location]);
+
+      // Merge calendar-derived tags and event labels, deduped
+      const allTags = new Set([...(tagNames || []), ...(labels || [])].map((t) => String(t || "").trim().toLowerCase()).filter(Boolean));
+      for (const tag of allTags) tags.push(["t", tag]);
+
+      const signed = await activeSigner.signEvent({
+        kind,
+        created_at: Math.floor(Date.now() / 1000),
+        tags,
+        content: String(description || summary || "")
+      });
+
+      await Promise.any(pool.publish(relays, signed, { onauth: activeOnauth }));
+      return { skipped: false, event: signed };
+    },
     close() {
       pool.close(relays);
     }

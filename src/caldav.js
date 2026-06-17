@@ -1,7 +1,7 @@
 import express from "express";
 import morgan from "morgan";
 import { issueToVtodo, calendarEventToVevent } from "./ics.js";
-import { processVtodoCreate, processVtodoPut, runReportQuery } from "./caldav-core.js";
+import { processVtodoCreate, processVtodoPut, processVeventCreate, runReportQuery } from "./caldav-core.js";
 import {
   buildPrincipalCalendars,
   buildCalendarEventCals,
@@ -584,6 +584,30 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
         action: "put_rejected_unknown_calendar"
       });
       return res.status(404).send("Not found");
+    }
+
+    // Calendar-event calendars (calev-*) receive VEVENTs, not VTODOs.
+    if (calendar.isCalendarEventCalendar) {
+      const existingCalEvent = db.getCalendarEventByUid(uid);
+      if (!existingCalEvent) {
+        const created = await processVeventCreate({
+          db,
+          syncService,
+          uid,
+          body: req.body,
+          calendarTags: calendar.filter?.exactTags || [],
+          authContext: req.authContext
+        });
+        if (created.etag) res.set("ETag", created.etag);
+        if (created.status === 201) {
+          db.logSync({ direction: "caldav_to_nostr", eventId: created.eventId || uid, action: "put_vevent_created_201" });
+        }
+        return res.status(created.status).send(created.error || "");
+      }
+      // Existing calendar event: accept the PUT without republishing (updates not yet supported).
+      const etag = existingCalEvent.caldav_etag;
+      if (etag) res.set("ETag", etag);
+      return res.status(204).end();
     }
 
     const issue = db.getIssueByUid(uid);

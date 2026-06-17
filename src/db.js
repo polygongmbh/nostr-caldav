@@ -718,6 +718,27 @@ export function openDb(filePath) {
     return db.prepare("SELECT * FROM calendar_events WHERE event_id = ?").get(eventId);
   }
 
+  function setCalendarEventUidFromCaldav({ eventId, uid }) {
+    const calEvent = getCalendarEventByEventId(eventId);
+    if (!calEvent) return { changed: false, reason: "unknown_calendar_event" };
+    if (calEvent.caldav_uid === uid) return { changed: false, calEvent, reason: "no_uid_change" };
+    const sequence = (calEvent.sequence || 0) + 1;
+    db.prepare(`
+      UPDATE calendar_events
+      SET caldav_uid = @caldav_uid, sequence = @sequence, caldav_etag = @caldav_etag, last_modified = @last_modified
+      WHERE event_id = @event_id
+    `).run({
+      caldav_uid: uid,
+      sequence,
+      caldav_etag: etagFor(calEvent.event_id, sequence),
+      last_modified: nowUnix(),
+      event_id: eventId
+    });
+    bumpSyncToken();
+    logSync({ direction: "caldav_to_nostr", eventId, action: "uid_mapped" });
+    return { changed: true, calEvent: getCalendarEventByEventId(eventId) };
+  }
+
   function listCalendarEventsFiltered({ pubkeys, tags, exactTags } = {}) {
     let query = "SELECT * FROM calendar_events";
     // Task-linked events (d_tag = "task-date-{issueId}-{type}") are represented as
@@ -843,6 +864,7 @@ export function openDb(filePath) {
     upsertCalendarEventFromNostr,
     getCalendarEventByUid,
     getCalendarEventByEventId,
+    setCalendarEventUidFromCaldav,
     listCalendarEventsFiltered,
     listDistinctCalendarEventTagCombinations,
     bumpSyncToken,

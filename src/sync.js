@@ -75,6 +75,38 @@ export function createSyncService({ db, publisher }) {
       };
     },
 
+    async createCalendarEventFromCaldav({ uid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, tagNames }, options = {}) {
+      const published = await publisher.publishCalendarEventCreate({
+        uid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, tagNames,
+        signer: options.authContext?.signer || null
+      });
+
+      if (published.skipped) {
+        db.logSync({
+          direction: "caldav_to_nostr",
+          eventId: uid,
+          action: "create_calendar_event_skipped",
+          error: published.reason
+        });
+        return published;
+      }
+
+      db.upsertCalendarEventFromNostr(published.event, "caldav-bridge");
+      db.setCalendarEventUidFromCaldav({ eventId: published.event.id, uid });
+
+      db.logSync({
+        direction: "caldav_to_nostr",
+        eventId: published.event.id,
+        action: `published_kind_${published.event.kind}`
+      });
+
+      return {
+        skipped: false,
+        event: published.event,
+        calEvent: db.getCalendarEventByUid(uid)
+      };
+    },
+
     close() {
       if (publisher?.close) publisher.close();
     }

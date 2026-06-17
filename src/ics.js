@@ -39,6 +39,71 @@ function parsePropValue(line) {
   return line.slice(idx + 1).trim();
 }
 
+function parsePropFull(line) {
+  const colonIdx = line.indexOf(":");
+  if (colonIdx < 0) return { name: line.toUpperCase(), params: {}, value: "" };
+  const namePart = line.slice(0, colonIdx);
+  const value = line.slice(colonIdx + 1);
+  const parts = namePart.split(";");
+  const name = parts[0].toUpperCase();
+  const params = {};
+  for (let i = 1; i < parts.length; i++) {
+    const eqIdx = parts[i].indexOf("=");
+    if (eqIdx < 0) continue;
+    params[parts[i].slice(0, eqIdx).toUpperCase()] = parts[i].slice(eqIdx + 1);
+  }
+  return { name, params, value };
+}
+
+function unescapeIcs(value) {
+  return String(value || "")
+    .replace(/\\n/gi, "\n")
+    .replace(/\\;/g, ";")
+    .replace(/\\,/g, ",")
+    .replace(/\\\\/g, "\\");
+}
+
+function localToUtcUnix(icsLocal, tzid) {
+  // icsLocal: "20260617T100000", tzid: "Europe/Berlin"
+  // Convert a local datetime in a given IANA timezone to a Unix timestamp.
+  const y = icsLocal.slice(0, 4), mo = icsLocal.slice(4, 6), d = icsLocal.slice(6, 8);
+  const h = icsLocal.slice(9, 11), mi = icsLocal.slice(11, 13), s = icsLocal.slice(13, 15) || "00";
+  const roughUtc = new Date(`${y}-${mo}-${d}T${h}:${mi}:${s}Z`);
+
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tzid, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+    }).formatToParts(roughUtc);
+    const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
+    const localInTz = new Date(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}Z`);
+    return Math.floor((roughUtc.getTime() + (roughUtc.getTime() - localInTz.getTime())) / 1000);
+  } catch {
+    return Math.floor(roughUtc.getTime() / 1000);
+  }
+}
+
+function parseDtProp(value, params) {
+  const v = String(value || "").trim();
+  // All-day: VALUE=DATE → YYYYMMDD
+  if (params?.VALUE === "DATE" || /^\d{8}$/.test(v)) {
+    return { isAllDay: true, date: `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}` };
+  }
+  // UTC: YYYYMMDDTHHMMSSz
+  if (/^\d{8}T\d{6}Z$/i.test(v)) {
+    const iso = `${v.slice(0,4)}-${v.slice(4,6)}-${v.slice(6,8)}T${v.slice(9,11)}:${v.slice(11,13)}:${v.slice(13,15)}Z`;
+    return { isAllDay: false, at: Math.floor(Date.parse(iso) / 1000) };
+  }
+  // Local with TZID: YYYYMMDDTHHmmss
+  if (/^\d{8}T\d{6}$/i.test(v)) {
+    if (params?.TZID) return { isAllDay: false, at: localToUtcUnix(v, params.TZID) };
+    // Float (no timezone): treat as UTC
+    const iso = `${v.slice(0,4)}-${v.slice(4,6)}-${v.slice(6,8)}T${v.slice(9,11)}:${v.slice(11,13)}:${v.slice(13,15)}Z`;
+    return { isAllDay: false, at: Math.floor(Date.parse(iso) / 1000) };
+  }
+  return null;
+}
+
 function splitCategories(raw) {
   const src = String(raw || "");
   if (!src) return [];
@@ -101,6 +166,55 @@ export function parseVtodo(rawIcs) {
       toInternalFromVtodo(props.STATUS) ||
       (props.COMPLETED ? "completed" : null) ||
       (props["PERCENT-COMPLETE"] === "100" ? "completed" : null)
+  };
+}
+
+export function parseVevent(rawIcs) {
+  const lines = unfoldIcsLines(rawIcs);
+  let inVevent = false;
+  let summary = null, description = null, location = null, uid = null;
+  let labels = [];
+  let startDate = null, endDate = null, startAt = null, endAt = null;
+
+  for (const line of lines) {
+    const upper = line.toUpperCase();
+    if (upper === "BEGIN:VEVENT") { inVevent = true; continue; }
+    if (upper === "END:VEVENT") { break; }
+    if (!inVevent) continue;
+
+    const { name, params, value } = parsePropFull(line);
+    switch (name) {
+      case "SUMMARY": if (!summary) summary = unescapeIcs(value); break;
+      case "DESCRIPTION": if (!description) description = unescapeIcs(value); break;
+      case "LOCATION": if (!location) location = unescapeIcs(value); break;
+      case "UID": if (!uid) uid = value.trim(); break;
+      case "CATEGORIES": labels = splitCategories(value).map((s) => s.trim().toLowerCase()); break;
+      case "DTSTART": {
+        const parsed = parseDtProp(value, params);
+        if (parsed?.isAllDay) startDate = parsed.date;
+        else if (parsed?.at != null) startAt = parsed.at;
+        break;
+      }
+      case "DTEND": {
+        const parsed = parseDtProp(value, params);
+        if (parsed?.isAllDay) endDate = parsed.date;
+        else if (parsed?.at != null) endAt = parsed.at;
+        break;
+      }
+    }
+  }
+
+  return {
+    uid,
+    summary,
+    description,
+    location,
+    labels,
+    isAllDay: Boolean(startDate),
+    startDate,
+    endDate,
+    startAt,
+    endAt
   };
 }
 
