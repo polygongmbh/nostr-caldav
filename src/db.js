@@ -462,6 +462,30 @@ export function openDb(filePath) {
     return { changed: true, eventId: issue.event_id };
   }
 
+  function setIssueDueDate({ eventId, dueDate, dueAt }) {
+    const issue = getIssueByEventIdStmt.get(eventId);
+    if (!issue) return { changed: false, reason: "unknown_issue" };
+
+    const sequence = (issue.sequence || 0) + 1;
+    db.prepare(`
+      UPDATE issues
+      SET due_at = @due_at, due_date = @due_date,
+          sequence = @sequence, caldav_etag = @caldav_etag, last_modified = @last_modified
+      WHERE event_id = @event_id
+    `).run({
+      event_id: eventId,
+      due_at: dueAt ?? null,
+      due_date: dueDate || null,
+      sequence,
+      caldav_etag: etagFor(eventId, sequence),
+      last_modified: nowUnix()
+    });
+
+    bumpSyncToken();
+    logSync({ direction: "caldav_to_nostr", eventId, action: "set_due_date" });
+    return { changed: true };
+  }
+
   function updateStatusFromCaldav({ uid, internalStatus }) {
     const issue = getIssueByUidStmt.get(uid);
     if (!issue) {
@@ -859,6 +883,7 @@ export function openDb(filePath) {
     upsertIssueFromNostr,
     applyStatusEventFromNostr,
     applyCommentEventFromNostr,
+    setIssueDueDate,
     updateStatusFromCaldav,
     setIssueUidFromCaldav,
     upsertCalendarEventFromNostr,

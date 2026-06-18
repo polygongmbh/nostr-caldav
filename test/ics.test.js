@@ -129,6 +129,79 @@ test("parseVevent returns null fields when VEVENT missing", () => {
   assert.equal(parsed.isAllDay, false);
 });
 
+test("parseVtodo extracts all-day DUE date", () => {
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "BEGIN:VTODO",
+    "UID:due-allday@test",
+    "SUMMARY:Task with date due",
+    "STATUS:NEEDS-ACTION",
+    "DUE;VALUE=DATE:20260620",
+    "END:VTODO",
+    "END:VCALENDAR"
+  ].join("\r\n");
+
+  const parsed = parseVtodo(ics);
+  assert.equal(parsed.hasDue, true);
+  assert.equal(parsed.dueDate, "2026-06-20");
+  assert.equal(parsed.dueAt, null);
+});
+
+test("parseVtodo extracts UTC datetime DUE", () => {
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "BEGIN:VTODO",
+    "UID:due-utc@test",
+    "SUMMARY:Task with timed due",
+    "STATUS:NEEDS-ACTION",
+    "DUE:20260620T140000Z",
+    "END:VTODO",
+    "END:VCALENDAR"
+  ].join("\r\n");
+
+  const parsed = parseVtodo(ics);
+  assert.equal(parsed.hasDue, true);
+  assert.equal(parsed.dueDate, null);
+  // 2026-06-20T14:00:00Z
+  assert.equal(parsed.dueAt, Math.floor(Date.parse("2026-06-20T14:00:00Z") / 1000));
+});
+
+test("parseVtodo extracts TZID DUE datetime", () => {
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "BEGIN:VTODO",
+    "UID:due-tzid@test",
+    "SUMMARY:Task with TZID due",
+    "STATUS:NEEDS-ACTION",
+    "DUE;TZID=Europe/Berlin:20260620T160000",
+    "END:VTODO",
+    "END:VCALENDAR"
+  ].join("\r\n");
+
+  const parsed = parseVtodo(ics);
+  assert.equal(parsed.hasDue, true);
+  assert.equal(parsed.dueDate, null);
+  // 16:00 Berlin CEST (UTC+2) → 14:00 UTC
+  assert.equal(parsed.dueAt, Math.floor(Date.parse("2026-06-20T14:00:00Z") / 1000));
+});
+
+test("parseVtodo has hasDue=false when DUE is absent", () => {
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "BEGIN:VTODO",
+    "UID:no-due@test",
+    "SUMMARY:No due date",
+    "STATUS:NEEDS-ACTION",
+    "END:VTODO",
+    "END:VCALENDAR"
+  ].join("\r\n");
+
+  const parsed = parseVtodo(ics);
+  assert.equal(parsed.hasDue, false);
+  assert.equal(parsed.dueDate, null);
+  assert.equal(parsed.dueAt, null);
+});
+
 test("issueToVtodo encodes labels, url, and open status", () => {
   const raw = issueToVtodo({
     event_id: "f".repeat(64),

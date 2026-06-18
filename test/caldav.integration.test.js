@@ -299,3 +299,138 @@ test("CalDAV PUT create integration publishes kind 1621 and stores UID mapping",
 
   db.close();
 });
+
+test("processVtodoCreate passes due date to sync service and stores it in DB", async () => {
+  const db = openDb(mkDbPath());
+  const calls = [];
+
+  const syncService = {
+    async createIssueFromCaldav(params) {
+      calls.push(params);
+      db.upsertIssueFromNostr(
+        {
+          id: "d".repeat(64),
+          pubkey: "f".repeat(64),
+          created_at: 1710000600,
+          kind: 1621,
+          content: params.description,
+          tags: [["subject", params.summary]]
+        },
+        "caldav-bridge"
+      );
+      db.setIssueUidFromCaldav({ eventId: "d".repeat(64), uid: params.uid });
+      if (params.dueDate || params.dueAt != null) {
+        db.setIssueDueDate({ eventId: "d".repeat(64), dueDate: params.dueDate, dueAt: params.dueAt });
+      }
+      return { skipped: false, event: { id: "d".repeat(64), kind: 1621 } };
+    }
+  };
+
+  const uid = "reminders-due-1@local";
+  const result = await processVtodoCreate({
+    db,
+    syncService,
+    uid,
+    body: [
+      "BEGIN:VCALENDAR",
+      "BEGIN:VTODO",
+      `UID:${uid}`,
+      "SUMMARY:Task with due date",
+      "STATUS:NEEDS-ACTION",
+      "DUE;VALUE=DATE:20260630",
+      "END:VTODO",
+      "END:VCALENDAR",
+      ""
+    ].join("\r\n")
+  });
+
+  assert.equal(result.status, 201);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].dueDate, "2026-06-30");
+  assert.equal(calls[0].dueAt, null);
+
+  const issue = db.getIssueByUid(uid);
+  assert.ok(issue);
+  assert.equal(issue.due_date, "2026-06-30");
+  assert.equal(issue.due_at, null);
+
+  db.close();
+});
+
+test("processVtodoPut updates due date when DUE field changes", async () => {
+  const db = openDb(mkDbPath());
+  const issue = seedIssue(db);
+  const dueDateCalls = [];
+
+  const syncService = {
+    async publishStatusFromCaldav() {
+      return { skipped: false, event: { id: "ok", kind: 1631 } };
+    },
+    async updateDueDateFromCaldav(issueEventId, { dueDate, dueAt }) {
+      dueDateCalls.push({ issueEventId, dueDate, dueAt });
+      db.setIssueDueDate({ eventId: issueEventId, dueDate, dueAt });
+      return { skipped: false, event: { id: "cal1", kind: 31922 } };
+    }
+  };
+
+  const result = await processVtodoPut({
+    db,
+    syncService,
+    uid: issue.caldav_uid,
+    body: [
+      "BEGIN:VCALENDAR",
+      "BEGIN:VTODO",
+      `UID:${issue.caldav_uid}`,
+      "STATUS:NEEDS-ACTION",
+      "DUE;VALUE=DATE:20260625",
+      "END:VTODO",
+      "END:VCALENDAR",
+      ""
+    ].join("\r\n")
+  });
+
+  assert.equal(result.status, 204);
+  assert.equal(dueDateCalls.length, 1);
+  assert.equal(dueDateCalls[0].dueDate, "2026-06-25");
+  assert.equal(dueDateCalls[0].dueAt, null);
+
+  const updated = db.getIssueByUid(issue.caldav_uid);
+  assert.equal(updated.due_date, "2026-06-25");
+
+  db.close();
+});
+
+test("processVtodoPut skips due date update when DUE field absent", async () => {
+  const db = openDb(mkDbPath());
+  const issue = seedIssue(db);
+  const dueDateCalls = [];
+
+  const syncService = {
+    async publishStatusFromCaldav() {
+      return { skipped: false, event: { id: "ok", kind: 1631 } };
+    },
+    async updateDueDateFromCaldav(issueEventId, params) {
+      dueDateCalls.push(params);
+    }
+  };
+
+  const result = await processVtodoPut({
+    db,
+    syncService,
+    uid: issue.caldav_uid,
+    body: [
+      "BEGIN:VCALENDAR",
+      "BEGIN:VTODO",
+      `UID:${issue.caldav_uid}`,
+      "STATUS:COMPLETED",
+      "END:VTODO",
+      "END:VCALENDAR",
+      ""
+    ].join("\r\n")
+  });
+
+  assert.equal(result.status, 204);
+  assert.equal(dueDateCalls.length, 0, "updateDueDateFromCaldav must not be called when DUE is absent");
+
+  db.close();
+});

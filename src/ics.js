@@ -138,6 +138,8 @@ export function parseVtodo(rawIcs) {
   const lines = unfoldIcsLines(rawIcs);
   let inVtodo = false;
   const props = {};
+  let dueParsed = null;
+  let hasDue = false;
 
   for (const line of lines) {
     const upper = line.toUpperCase();
@@ -153,6 +155,12 @@ export function parseVtodo(rawIcs) {
     const name = parsePropName(line);
     const value = parsePropValue(line);
     if (!props[name]) props[name] = value;
+
+    if (name === "DUE" && !hasDue) {
+      hasDue = true;
+      const { params } = parsePropFull(line);
+      dueParsed = parseDtProp(value, params);
+    }
   }
 
   return {
@@ -165,7 +173,10 @@ export function parseVtodo(rawIcs) {
     internalStatus:
       toInternalFromVtodo(props.STATUS) ||
       (props.COMPLETED ? "completed" : null) ||
-      (props["PERCENT-COMPLETE"] === "100" ? "completed" : null)
+      (props["PERCENT-COMPLETE"] === "100" ? "completed" : null),
+    hasDue,
+    dueDate: dueParsed?.isAllDay ? dueParsed.date : null,
+    dueAt: !dueParsed?.isAllDay && dueParsed?.at != null ? dueParsed.at : null
   };
 }
 

@@ -109,6 +109,23 @@ export async function processVtodoPut({ db, syncService, uid, ifMatch, body, aut
     }
   }
 
+  if (parsed.hasDue) {
+    const newDueDate = parsed.dueDate || null;
+    const newDueAt = parsed.dueAt ?? null;
+    if (newDueDate !== (issue.due_date || null) || newDueAt !== (issue.due_at ?? null)) {
+      try {
+        await syncService.updateDueDateFromCaldav(issue.event_id, { dueDate: newDueDate, dueAt: newDueAt }, { authContext });
+      } catch (error) {
+        db.logSync({
+          direction: "caldav_to_nostr",
+          eventId: issue.event_id,
+          action: "publish_due_date_failed",
+          error: String(error)
+        });
+      }
+    }
+  }
+
   const refreshed = db.getIssueByUid(uid);
   return {
     status: 204,
@@ -188,7 +205,9 @@ export async function processVtodoCreate({ db, syncService, uid, body, channelTa
       description,
       labels,
       channelTag,
-      status
+      status,
+      dueDate: parsed.dueDate || null,
+      dueAt: parsed.dueAt ?? null
     }, { authContext });
 
     if (created?.skipped) {
