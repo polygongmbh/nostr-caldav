@@ -5,6 +5,7 @@ import { createCaldavServer } from "./caldav.js";
 import { createSyncService } from "./sync.js";
 import { createBridgeSigner, createNip42AuthSigner } from "./signer.js";
 import { createNoasAuthProvider } from "./noas-auth.js";
+import { fetchRelayCalendarFeed } from "./relay-feed.js";
 
 function unixNow() {
   return Math.floor(Date.now() / 1000);
@@ -232,6 +233,7 @@ async function main() {
     syncService,
     trackedPubkeys,
     noasAuthProvider,
+    relayFeedFetcher: fetchRelayCalendarFeed,
     onAuthenticatedContext: (authContext) => {
       const pubkey = authContext?.principal?.pubkeys?.[0];
       const normalized = String(pubkey || "").trim().toLowerCase();

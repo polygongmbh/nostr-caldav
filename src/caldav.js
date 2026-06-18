@@ -1,6 +1,6 @@
 import express from "express";
 import morgan from "morgan";
-import { issueToVtodo, calendarEventToVevent } from "./ics.js";
+import { issueToVtodo, calendarEventToVevent, nostrCalendarEventsToIcsFeed } from "./ics.js";
 import { processVtodoCreate, processVtodoPut, processVeventCreate, runReportQuery } from "./caldav-core.js";
 import {
   buildPrincipalCalendars,
@@ -316,7 +316,7 @@ function multistatusForPrincipalRef(_baseUrl, principal, hrefPath) {
 </d:multistatus>`;
 }
 
-export function createCaldavServer({ db, caldavConfig, syncService, trackedPubkeys, noasAuthProvider, onAuthenticatedContext }) {
+export function createCaldavServer({ db, caldavConfig, syncService, trackedPubkeys, noasAuthProvider, onAuthenticatedContext, relayFeedFetcher = null }) {
   const app = express();
   const calendarOptions = {
     includeAutoPubkeyCalendars: caldavConfig.includeAutoPubkeyCalendars
@@ -332,6 +332,27 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
 
   app.use(morgan("combined"));
   app.use(express.text({ type: "*/*", limit: "2mb" }));
+
+  // Public webcal feed — no auth required. Must be registered before principalAuth.
+  app.get(/^\/relay\/(.+)$/, async (req, res) => {
+    if (!relayFeedFetcher) return res.status(503).send("Relay feed not configured");
+    const rawHostname = req.params[0];
+    if (!rawHostname || /\s/.test(rawHostname) || rawHostname.length > 253) {
+      return res.status(400).send("Invalid relay hostname");
+    }
+    const relayUrl = /^wss?:\/\//i.test(rawHostname) ? rawHostname : `wss://${rawHostname}`;
+    try {
+      const events = await relayFeedFetcher(relayUrl);
+      const ics = nostrCalendarEventsToIcsFeed(events, { calendarName: rawHostname });
+      res.set("Content-Type", "text/calendar; charset=utf-8");
+      res.set("Content-Disposition", `attachment; filename="${rawHostname}.ics"`);
+      return res.status(200).send(ics);
+    } catch (error) {
+      console.error(`[relay-feed] failed to fetch ${relayUrl}`, error);
+      return res.status(502).send("Failed to fetch relay feed");
+    }
+  });
+
   app.use(principalAuth(principals, noasAuthProvider, onAuthenticatedContext));
 
   app.options("*", (_req, res) => {

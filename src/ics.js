@@ -1,5 +1,5 @@
 import { nip19 } from "nostr-tools";
-import { toInternalFromVtodo, toVtodoFromInternal } from "./status.js";
+import { toInternalFromVtodo, toVtodoFromInternal, CALENDAR_EVENT_DATE_KIND } from "./status.js";
 
 function escapeIcs(value = "") {
   return String(value)
@@ -272,6 +272,84 @@ export function issueToVtodo(issue) {
 
   lines.push("END:VTODO", "END:VCALENDAR", "");
   return lines.join("\r\n");
+}
+
+function nostrEventToVeventComponent(event) {
+  const tags = event.tags || [];
+  const findTag = (name) => tags.find((t) => t[0] === name)?.[1] ?? null;
+  const listTags = (name) => tags.filter((t) => t[0] === name).map((t) => t[1]).filter(Boolean);
+
+  const title = findTag("title") ?? "(untitled)";
+  const description = event.content ?? "";
+  const location = findTag("location");
+  const labelTags = listTags("t").map((v) => String(v).trim().toLowerCase()).filter(Boolean);
+  const isAllDay = event.kind === CALENDAR_EVENT_DATE_KIND;
+
+  const uid = `${event.id}@nostr-calendar`;
+  const dtstamp = toUtcStamp(event.created_at);
+
+  const startTag = findTag("start");
+  const endTag = findTag("end");
+
+  let dtstart = null;
+  let dtend = null;
+
+  if (startTag) {
+    dtstart = isAllDay
+      ? `DTSTART;VALUE=DATE:${String(startTag).replace(/-/g, "")}`
+      : `DTSTART:${toUtcStamp(Number(startTag))}`;
+  }
+  if (endTag) {
+    dtend = isAllDay
+      ? `DTEND;VALUE=DATE:${String(endTag).replace(/-/g, "")}`
+      : `DTEND:${toUtcStamp(Number(endTag))}`;
+  }
+
+  if (!dtstart) return null;
+
+  let url = "";
+  try {
+    url = `nostr:${nip19.neventEncode({ id: event.id, author: event.pubkey })}`;
+  } catch {
+    url = `nostr:${event.id}`;
+  }
+
+  const lines = [
+    "BEGIN:VEVENT",
+    `UID:${escapeIcs(uid)}`,
+    `DTSTAMP:${dtstamp}`,
+    `CREATED:${dtstamp}`,
+    `LAST-MODIFIED:${dtstamp}`,
+    "SEQUENCE:0",
+    `SUMMARY:${escapeIcs(title)}`,
+    description ? `DESCRIPTION:${escapeIcs(description)}` : null,
+    dtstart,
+    dtend,
+    location ? `LOCATION:${escapeIcs(location)}` : null,
+    `ORGANIZER;CN=${escapeIcs(event.pubkey)}:mailto:noreply@nostr.local`,
+    `URL:${escapeIcs(url)}`
+  ];
+
+  if (labelTags.length > 0) {
+    lines.push(`CATEGORIES:${labelTags.map((l) => escapeIcs(l)).join(",")}`);
+  }
+
+  lines.push("END:VEVENT");
+  return lines.filter(Boolean).join("\r\n");
+}
+
+export function nostrCalendarEventsToIcsFeed(nostrEvents, { calendarName = "Nostr Calendar" } = {}) {
+  const components = (nostrEvents || []).map((ev) => nostrEventToVeventComponent(ev)).filter(Boolean);
+  return [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//nostr-caldav-bridge//EN",
+    "CALSCALE:GREGORIAN",
+    `X-WR-CALNAME:${escapeIcs(calendarName)}`,
+    ...components,
+    "END:VCALENDAR",
+    ""
+  ].join("\r\n");
 }
 
 export function calendarEventToVevent(calEvent) {
