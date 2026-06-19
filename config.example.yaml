@@ -14,22 +14,20 @@ nostr:
   # Required: NOAS integration.
   noas:
     enabled: true
-    # For /srv/nodal/noas multi-tenant setup, use the tenant URL:
-    # - polygon.gmbh users: https://noas.polygon.gmbh
-    # - linkenfels.de users: https://noas.linkenfels.de
-    base_url: "https://noas.polygon.gmbh"
+    # For multi-tenant setups, use the tenant URL for each domain.
+    base_url: "https://noas.example.com"
     # Optional and ignored in NOAS CalDAV auth mode.
     username: null
     # Change if your NOAS is mounted under a custom base path.
     api_path_prefix: "/api/v1"
     timeout_ms: 10000
     # Required in NOAS-only bridge mode:
-    # username=handle (e.g. janek@polygon.gmbh), password=NOAS password.
+    # username=handle (e.g. user@example.com), password=NOAS password.
     caldav_auth_enabled: true
     # Optional per-domain NOAS URL mapping for handle domains.
     domain_base_urls:
-      polygon.gmbh: "https://noas.polygon.gmbh"
-      linkenfels.de: "https://noas.linkenfels.de"
+      example.com: "https://noas.example.com"
+      example.org: "https://noas.example.org"
     # Cache mode: encrypted (recommended) or decrypted
     cache_mode: "encrypted"
     cache_ttl_ms: 300000
