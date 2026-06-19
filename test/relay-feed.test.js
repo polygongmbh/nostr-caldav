@@ -159,6 +159,27 @@ test("/relay/:hostname returns ICS feed without authentication", async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 
+test("/relay/:hostname.ics strips .ics suffix and works identically", async () => {
+  let receivedUrl = null;
+
+  const app = createCaldavServer({
+    db: mockDb, caldavConfig, syncService: stubSyncService, trackedPubkeys: [],
+    relayFeedFetcher: async (relayUrl) => { receivedUrl = relayUrl; return []; }
+  });
+
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const { port } = server.address();
+
+  const res = await fetch(`http://127.0.0.1:${port}/relay/my.relay.example.ics`);
+  assert.equal(res.status, 200);
+  assert.equal(receivedUrl, "wss://my.relay.example", ".ics stripped before relay URL");
+  const body = await res.text();
+  assert.ok(body.includes("BEGIN:VCALENDAR"), "returns valid ICS");
+
+  await new Promise((resolve) => server.close(resolve));
+});
+
 test("/relay/:hostname prepends wss:// and passes relay URL to fetcher", async () => {
   let receivedUrl = null;
 

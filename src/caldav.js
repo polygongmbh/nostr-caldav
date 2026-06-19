@@ -336,7 +336,7 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
   // Public webcal feed — no auth required. Must be registered before principalAuth.
   app.get(/^\/relay\/(.+)$/, async (req, res) => {
     if (!relayFeedFetcher) return res.status(503).send("Relay feed not configured");
-    const rawHostname = req.params[0];
+    const rawHostname = req.params[0].replace(/\.ics$/i, "");
     if (!rawHostname || /\s/.test(rawHostname) || rawHostname.length > 253) {
       return res.status(400).send("Invalid relay hostname");
     }
