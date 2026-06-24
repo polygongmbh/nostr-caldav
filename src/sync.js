@@ -1,3 +1,8 @@
+function getPublishRelays(authContext) {
+  const filter = authContext?.noas?.relayFilter || authContext?.principal?.relayFilter || null;
+  return filter ? [filter] : null;
+}
+
 export function createSyncService({ db, publisher }) {
   return {
     onIssueEvent(event, relayUrl) {
@@ -17,7 +22,7 @@ export function createSyncService({ db, publisher }) {
     },
 
     async publishStatusFromCaldav(issueEventId, status, options = {}) {
-      const published = await publisher.publishStatusChange({ issueEventId, status, signer: options.authContext?.signer || null });
+      const published = await publisher.publishStatusChange({ issueEventId, status, signer: options.authContext?.signer || null, publishRelays: getPublishRelays(options.authContext) });
       if (published.skipped) {
         db.logSync({
           direction: "caldav_to_nostr",
@@ -43,7 +48,8 @@ export function createSyncService({ db, publisher }) {
         description,
         channelTag,
         labels,
-        signer: options.authContext?.signer || null
+        signer: options.authContext?.signer || null,
+        publishRelays: getPublishRelays(options.authContext)
       });
       if (publishedIssue.skipped) {
         db.logSync({
@@ -109,7 +115,8 @@ export function createSyncService({ db, publisher }) {
         endAt: null,
         tagNames: [],
         taskRef: issueEventId,
-        signer: options.authContext?.signer || null
+        signer: options.authContext?.signer || null,
+        publishRelays: getPublishRelays(options.authContext)
       });
 
       if (published.skipped) {
@@ -138,7 +145,8 @@ export function createSyncService({ db, publisher }) {
     async createCalendarEventFromCaldav({ uid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, tagNames }, options = {}) {
       const published = await publisher.publishCalendarEventCreate({
         uid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, tagNames,
-        signer: options.authContext?.signer || null
+        signer: options.authContext?.signer || null,
+        publishRelays: getPublishRelays(options.authContext)
       });
 
       if (published.skipped) {

@@ -433,7 +433,7 @@ export function createNostrPublisher({ relays, signer, onauth }) {
 
   return {
     enabled: Boolean(signer?.enabled),
-    async publishIssueCreate({ summary, description, channelTag = null, labels = [], signer: signerOverride = null }) {
+    async publishIssueCreate({ summary, description, channelTag = null, labels = [], signer: signerOverride = null, publishRelays = null }) {
       const activeSigner = signerOverride || signer;
       const activeOnauth = activeSigner ? async (eventTemplate) => activeSigner.signEvent(eventTemplate) : onauth || undefined;
       if (!activeSigner?.enabled) {
@@ -462,10 +462,11 @@ export function createNostrPublisher({ relays, signer, onauth }) {
         content: String(description || summary || "")
       });
 
-      await Promise.any(pool.publish(relays, signed, { onauth: activeOnauth }));
+      const targetRelays = (Array.isArray(publishRelays) && publishRelays.length > 0) ? publishRelays : relays;
+      await Promise.any(pool.publish(targetRelays, signed, { onauth: activeOnauth }));
       return { skipped: false, event: signed };
     },
-    async publishStatusChange({ issueEventId, status, signer: signerOverride = null }) {
+    async publishStatusChange({ issueEventId, status, signer: signerOverride = null, publishRelays = null }) {
       const activeSigner = signerOverride || signer;
       const activeOnauth = activeSigner ? async (eventTemplate) => activeSigner.signEvent(eventTemplate) : onauth || undefined;
       if (!activeSigner?.enabled) {
@@ -484,10 +485,11 @@ export function createNostrPublisher({ relays, signer, onauth }) {
         content: ""
       });
 
-      await Promise.any(pool.publish(relays, signed, { onauth: activeOnauth }));
+      const targetRelays = (Array.isArray(publishRelays) && publishRelays.length > 0) ? publishRelays : relays;
+      await Promise.any(pool.publish(targetRelays, signed, { onauth: activeOnauth }));
       return { skipped: false, event: signed };
     },
-    async publishCalendarEventCreate({ uid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, tagNames, taskRef = null, signer: signerOverride = null }) {
+    async publishCalendarEventCreate({ uid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, tagNames, taskRef = null, signer: signerOverride = null, publishRelays = null }) {
       const activeSigner = signerOverride || signer;
       const activeOnauth = activeSigner ? async (eventTemplate) => activeSigner.signEvent(eventTemplate) : onauth || undefined;
       if (!activeSigner?.enabled) {
@@ -526,7 +528,8 @@ export function createNostrPublisher({ relays, signer, onauth }) {
         content: String(description || summary || "")
       });
 
-      await Promise.any(pool.publish(relays, signed, { onauth: activeOnauth }));
+      const targetRelays = (Array.isArray(publishRelays) && publishRelays.length > 0) ? publishRelays : relays;
+      await Promise.any(pool.publish(targetRelays, signed, { onauth: activeOnauth }));
       return { skipped: false, event: signed };
     },
     close() {
