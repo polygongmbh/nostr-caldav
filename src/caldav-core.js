@@ -134,6 +134,64 @@ export async function processVtodoPut({ db, syncService, uid, ifMatch, body, aut
   };
 }
 
+export async function processVeventUpdate({ db, syncService, uid, body, calendarTags = [], authContext = null }) {
+  const existing = db.getCalendarEventByUid(uid);
+  if (!existing) {
+    return { status: 404, error: "Not found" };
+  }
+
+  const parsed = parseVevent(body || "");
+  const summary = String(parsed.summary || "").trim();
+  const description = String(parsed.description || "").trim();
+
+  if (!summary && !description) {
+    db.logSync({ direction: "caldav_to_nostr", eventId: uid, action: "vevent_update_missing_content" });
+    return { status: 400, error: "VEVENT SUMMARY is required" };
+  }
+
+  // CalDAV PUT must send the full VEVENT, but some clients omit unchanged datetime fields
+  // or use formats that fail to parse. Fall back to the existing DB values so the relay
+  // always gets a valid NIP-52 event with a start tag.
+  // Use isFinite() guard: ?? only catches null/undefined, not NaN from failed date parsing.
+  const validNum = (v) => (typeof v === "number" && isFinite(v) ? v : null);
+  const resolvedIsAllDay = parsed.startDate != null ? true : validNum(parsed.startAt) != null ? false : Boolean(existing.is_all_day);
+  const resolvedStartDate = parsed.startDate ?? existing.start_date ?? null;
+  const resolvedEndDate = parsed.endDate ?? existing.end_date ?? null;
+  const resolvedStartAt = validNum(parsed.startAt) ?? (resolvedIsAllDay ? null : existing.start_at) ?? null;
+  const resolvedEndAt = validNum(parsed.endAt) ?? (resolvedIsAllDay ? null : existing.end_at) ?? null;
+  const resolvedStartTzid = parsed.startTzid ?? existing.start_tzid ?? null;
+  const resolvedEndTzid = parsed.endTzid ?? existing.end_tzid ?? null;
+
+  try {
+    const updated = await syncService.updateCalendarEventFromCaldav({
+      dTag: existing.d_tag,
+      caldavUid: uid,
+      summary: summary || description.slice(0, 180),
+      description,
+      location: parsed.location !== undefined ? parsed.location : (existing.location || null),
+      labels: Array.isArray(parsed.labels) && parsed.labels.length > 0 ? parsed.labels : [],
+      isAllDay: resolvedIsAllDay,
+      startDate: resolvedStartDate,
+      endDate: resolvedEndDate,
+      startAt: resolvedStartAt,
+      endAt: resolvedEndAt,
+      startTzid: resolvedStartTzid,
+      endTzid: resolvedEndTzid,
+      tagNames: calendarTags
+    }, { authContext });
+
+    if (updated?.skipped) {
+      return { status: 502, error: "Failed to publish updated calendar event to relays" };
+    }
+
+    const calEvent = db.getCalendarEventByUid(uid);
+    return { status: 204, etag: calEvent?.caldav_etag || null, eventId: updated.event.id };
+  } catch (error) {
+    db.logSync({ direction: "caldav_to_nostr", eventId: uid, action: "update_calendar_event_failed", error: String(error) });
+    return { status: 502, error: "Failed to publish updated calendar event to relays" };
+  }
+}
+
 export async function processVeventCreate({ db, syncService, uid, body, calendarTags = [], authContext = null }) {
   const existing = db.getCalendarEventByUid(uid);
   if (existing) {
@@ -162,6 +220,8 @@ export async function processVeventCreate({ db, syncService, uid, body, calendar
       endDate: parsed.endDate || null,
       startAt: parsed.startAt ?? null,
       endAt: parsed.endAt ?? null,
+      startTzid: parsed.startTzid || null,
+      endTzid: parsed.endTzid || null,
       tagNames: calendarTags
     }, { authContext });
 

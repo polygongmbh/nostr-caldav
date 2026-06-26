@@ -1,7 +1,7 @@
 import express from "express";
 import morgan from "morgan";
 import { issueToVtodo, calendarEventToVevent, nostrCalendarEventsToIcsFeed } from "./ics.js";
-import { processVtodoCreate, processVtodoPut, processVeventCreate, runReportQuery } from "./caldav-core.js";
+import { processVtodoCreate, processVtodoPut, processVeventCreate, processVeventUpdate, runReportQuery } from "./caldav-core.js";
 import {
   buildPrincipalCalendars,
   buildCalendarEventCals,
@@ -625,10 +625,20 @@ export function createCaldavServer({ db, caldavConfig, syncService, trackedPubke
         }
         return res.status(created.status).send(created.error || "");
       }
-      // Existing calendar event: accept the PUT without republishing (updates not yet supported).
-      const etag = existingCalEvent.caldav_etag;
-      if (etag) res.set("ETag", etag);
-      return res.status(204).end();
+      // Existing calendar event: publish the update to Nostr.
+      const updated = await processVeventUpdate({
+        db,
+        syncService,
+        uid,
+        body: req.body,
+        calendarTags: calendar.filter?.exactTags || [],
+        authContext: req.authContext
+      });
+      if (updated.etag) res.set("ETag", updated.etag);
+      if (updated.status === 204) {
+        db.logSync({ direction: "caldav_to_nostr", eventId: updated.eventId || uid, action: "put_vevent_updated_204" });
+      }
+      return res.status(updated.status).send(updated.error || "");
     }
 
     const issue = db.getIssueByUid(uid);

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { openDb } from "../src/db.js";
 import { issueToVtodo } from "../src/ics.js";
-import { processVtodoCreate, processVtodoPut, runReportQuery, selectIssuesForSync } from "../src/caldav-core.js";
+import { processVtodoCreate, processVtodoPut, processVeventCreate, processVeventUpdate, runReportQuery, selectIssuesForSync } from "../src/caldav-core.js";
 
 function mkDbPath() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nostr-caldav-it-"));
@@ -432,5 +432,129 @@ test("processVtodoPut skips due date update when DUE field absent", async () => 
   assert.equal(result.status, 204);
   assert.equal(dueDateCalls.length, 0, "updateDueDateFromCaldav must not be called when DUE is absent");
 
+  db.close();
+});
+
+function seedCalendarEvent(db) {
+  const event = {
+    id: "c".repeat(64),
+    pubkey: "b".repeat(64),
+    kind: 31923,
+    created_at: 1710000000,
+    content: "Original description",
+    tags: [
+      ["d", "original-d-tag"],
+      ["title", "Original Title"],
+      ["start", "1751400000"],
+      ["end", "1751403600"],
+      ["t", "work"]
+    ]
+  };
+  db.upsertCalendarEventFromNostr(event, "wss://relay.example");
+  const uid = `${"c".repeat(64)}@nostr-calendar`;
+  return db.getCalendarEventByUid(uid);
+}
+
+test("processVeventUpdate publishes updated event and bumps etag", async () => {
+  const db = openDb(mkDbPath());
+  const calEvent = seedCalendarEvent(db);
+  const initialEtag = calEvent.caldav_etag;
+  const updates = [];
+
+  const syncService = {
+    async updateCalendarEventFromCaldav(params) {
+      updates.push(params);
+      // Simulate publishing a new Nostr event with same d_tag
+      const newEvent = {
+        id: "d".repeat(64),
+        pubkey: "b".repeat(64),
+        kind: 31923,
+        created_at: 1710000999,
+        content: params.description,
+        tags: [
+          ["d", params.dTag],
+          ["title", params.summary],
+          ["start", String(params.startAt)],
+          ["end", String(params.endAt)]
+        ]
+      };
+      db.upsertCalendarEventFromNostr(newEvent, "caldav-bridge");
+      return { skipped: false, event: newEvent, calEvent: db.getCalendarEventByUid(calEvent.caldav_uid) };
+    }
+  };
+
+  const result = await processVeventUpdate({
+    db,
+    syncService,
+    uid: calEvent.caldav_uid,
+    body: [
+      "BEGIN:VCALENDAR",
+      "BEGIN:VEVENT",
+      `UID:${calEvent.caldav_uid}`,
+      "SUMMARY:Updated Title",
+      "DESCRIPTION:Updated description",
+      "DTSTART:20250701T100000Z",
+      "DTEND:20250701T110000Z",
+      "END:VEVENT",
+      "END:VCALENDAR",
+      ""
+    ].join("\r\n")
+  });
+
+  assert.equal(result.status, 204);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].dTag, "original-d-tag", "processVeventUpdate must pass d_tag to sync service");
+  assert.equal(updates[0].caldavUid, calEvent.caldav_uid, "processVeventUpdate must pass caldavUid to sync service");
+  assert.equal(updates[0].summary, "Updated Title");
+  assert.equal(updates[0].description, "Updated description");
+
+  const stored = db.getCalendarEventByUid(calEvent.caldav_uid);
+  assert.ok(stored, "event should still be findable by caldav_uid after update");
+  assert.equal(stored.title, "Updated Title");
+  assert.notEqual(stored.caldav_etag, initialEtag, "etag should change after update");
+
+  db.close();
+});
+
+test("processVeventUpdate returns 404 when event not found", async () => {
+  const db = openDb(mkDbPath());
+  const syncService = { async updateCalendarEventFromCaldav() {} };
+
+  const result = await processVeventUpdate({
+    db,
+    syncService,
+    uid: "nonexistent@nostr-calendar",
+    body: "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:X\r\nDTSTART:20250701T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+  });
+
+  assert.equal(result.status, 404);
+  db.close();
+});
+
+test("processVeventUpdate passes d_tag (not caldav_uid) to sync service for relay replacement", async () => {
+  const db = openDb(mkDbPath());
+  const calEvent = seedCalendarEvent(db);
+  const calls = [];
+
+  const syncService = {
+    async updateCalendarEventFromCaldav(params) {
+      calls.push(params);
+      return {
+        skipped: false,
+        event: { id: "d".repeat(64), kind: 31923, created_at: 1710000999, pubkey: "b".repeat(64), tags: [["d", params.dTag], ["title", params.summary], ["start", "1751400000"], ["end", "1751403600"]], content: "" },
+        calEvent: null
+      };
+    }
+  };
+
+  await processVeventUpdate({
+    db,
+    syncService,
+    uid: calEvent.caldav_uid,
+    body: "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Updated\r\nDTSTART:20250701T100000Z\r\nDTEND:20250701T110000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+  });
+
+  assert.equal(calls[0].dTag, "original-d-tag", "sync service must receive d_tag for relay replacement");
+  assert.equal(calls[0].caldavUid, calEvent.caldav_uid, "sync service must also receive caldavUid for DB lookup");
   db.close();
 });
