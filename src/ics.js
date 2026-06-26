@@ -13,6 +13,21 @@ function toUtcStamp(epochSeconds) {
   return new Date(epochSeconds * 1000).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
 }
 
+function toLocalStamp(epochSeconds, tzid) {
+  const date = new Date(epochSeconds * 1000);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tzid,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+  const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
+  // V8 returns hour="24" with the day already advanced (e.g. day=27, hour=24 for midnight on the 27th).
+  // Replace "24" with "00"; the day is already correct.
+  const h = p.hour === "24" ? "00" : p.hour;
+  return `${p.year}${p.month}${p.day}T${h}${p.minute}${p.second}`;
+}
+
 function unfoldIcsLines(raw) {
   const lines = String(raw || "").replace(/\r\n/g, "\n").split("\n");
   const out = [];
@@ -76,8 +91,10 @@ function localToUtcUnix(icsLocal, tzid) {
       hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
     }).formatToParts(roughUtc);
     const p = Object.fromEntries(parts.map((x) => [x.type, x.value]));
-    const localInTz = new Date(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}Z`);
-    return Math.floor((roughUtc.getTime() + (roughUtc.getTime() - localInTz.getTime())) / 1000);
+    // V8 returns hour="24" with the day already advanced; replace with "00", day is correct.
+    const hour = p.hour === "24" ? "00" : p.hour;
+    const localInTzMs = Date.parse(`${p.year}-${p.month}-${p.day}T${hour}:${p.minute}:${p.second}Z`);
+    return Math.floor((roughUtc.getTime() + (roughUtc.getTime() - localInTzMs)) / 1000);
   } catch {
     return Math.floor(roughUtc.getTime() / 1000);
   }
@@ -92,14 +109,14 @@ function parseDtProp(value, params) {
   // UTC: YYYYMMDDTHHMMSSz
   if (/^\d{8}T\d{6}Z$/i.test(v)) {
     const iso = `${v.slice(0,4)}-${v.slice(4,6)}-${v.slice(6,8)}T${v.slice(9,11)}:${v.slice(11,13)}:${v.slice(13,15)}Z`;
-    return { isAllDay: false, at: Math.floor(Date.parse(iso) / 1000) };
+    return { isAllDay: false, at: Math.floor(Date.parse(iso) / 1000), tzid: null };
   }
   // Local with TZID: YYYYMMDDTHHmmss
   if (/^\d{8}T\d{6}$/i.test(v)) {
-    if (params?.TZID) return { isAllDay: false, at: localToUtcUnix(v, params.TZID) };
+    if (params?.TZID) return { isAllDay: false, at: localToUtcUnix(v, params.TZID), tzid: params.TZID };
     // Float (no timezone): treat as UTC
     const iso = `${v.slice(0,4)}-${v.slice(4,6)}-${v.slice(6,8)}T${v.slice(9,11)}:${v.slice(11,13)}:${v.slice(13,15)}Z`;
-    return { isAllDay: false, at: Math.floor(Date.parse(iso) / 1000) };
+    return { isAllDay: false, at: Math.floor(Date.parse(iso) / 1000), tzid: null };
   }
   return null;
 }
@@ -186,6 +203,7 @@ export function parseVevent(rawIcs) {
   let summary = null, description = null, location = null, uid = null;
   let labels = [];
   let startDate = null, endDate = null, startAt = null, endAt = null;
+  let startTzid = null, endTzid = null;
 
   for (const line of lines) {
     const upper = line.toUpperCase();
@@ -203,13 +221,13 @@ export function parseVevent(rawIcs) {
       case "DTSTART": {
         const parsed = parseDtProp(value, params);
         if (parsed?.isAllDay) startDate = parsed.date;
-        else if (parsed?.at != null) startAt = parsed.at;
+        else if (parsed?.at != null) { startAt = parsed.at; startTzid = parsed.tzid || null; }
         break;
       }
       case "DTEND": {
         const parsed = parseDtProp(value, params);
         if (parsed?.isAllDay) endDate = parsed.date;
-        else if (parsed?.at != null) endAt = parsed.at;
+        else if (parsed?.at != null) { endAt = parsed.at; endTzid = parsed.tzid || null; }
         break;
       }
     }
@@ -225,7 +243,9 @@ export function parseVevent(rawIcs) {
     startDate,
     endDate,
     startAt,
-    endAt
+    endAt,
+    startTzid,
+    endTzid
   };
 }
 
@@ -366,8 +386,19 @@ export function calendarEventToVevent(calEvent) {
     dtstart = startPacked ? `DTSTART;VALUE=DATE:${startPacked}` : null;
     dtend = endPacked ? `DTEND;VALUE=DATE:${endPacked}` : null;
   } else {
-    dtstart = calEvent.start_at ? `DTSTART:${toUtcStamp(calEvent.start_at)}` : null;
-    dtend = calEvent.end_at ? `DTEND:${toUtcStamp(calEvent.end_at)}` : null;
+    const sTzid = calEvent.start_tzid || null;
+    const eTzid = calEvent.end_tzid || calEvent.start_tzid || null;
+    try {
+      dtstart = calEvent.start_at
+        ? (sTzid ? `DTSTART;TZID=${sTzid}:${toLocalStamp(calEvent.start_at, sTzid)}` : `DTSTART:${toUtcStamp(calEvent.start_at)}`)
+        : null;
+      dtend = calEvent.end_at
+        ? (eTzid ? `DTEND;TZID=${eTzid}:${toLocalStamp(calEvent.end_at, eTzid)}` : `DTEND:${toUtcStamp(calEvent.end_at)}`)
+        : null;
+    } catch {
+      dtstart = calEvent.start_at ? `DTSTART:${toUtcStamp(calEvent.start_at)}` : null;
+      dtend = calEvent.end_at ? `DTEND:${toUtcStamp(calEvent.end_at)}` : null;
+    }
   }
 
   const lines = [

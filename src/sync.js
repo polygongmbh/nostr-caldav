@@ -142,9 +142,9 @@ export function createSyncService({ db, publisher }) {
       return published;
     },
 
-    async createCalendarEventFromCaldav({ uid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, tagNames }, options = {}) {
+    async createCalendarEventFromCaldav({ uid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, startTzid = null, endTzid = null, tagNames }, options = {}) {
       const published = await publisher.publishCalendarEventCreate({
-        uid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, tagNames,
+        uid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, startTzid, endTzid, tagNames,
         signer: options.authContext?.signer || null,
         publishRelays: getPublishRelays(options.authContext)
       });
@@ -172,6 +172,40 @@ export function createSyncService({ db, publisher }) {
         skipped: false,
         event: published.event,
         calEvent: db.getCalendarEventByUid(uid)
+      };
+    },
+
+    async updateCalendarEventFromCaldav({ dTag, caldavUid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, startTzid = null, endTzid = null, tagNames }, options = {}) {
+      // dTag is the addressable d-tag of the existing event so the relay replaces it in-place.
+      const published = await publisher.publishCalendarEventCreate({
+        uid: dTag,
+        summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, startTzid, endTzid, tagNames,
+        signer: options.authContext?.signer || null,
+        publishRelays: getPublishRelays(options.authContext)
+      });
+
+      if (published.skipped) {
+        db.logSync({
+          direction: "caldav_to_nostr",
+          eventId: caldavUid,
+          action: "update_calendar_event_skipped",
+          error: published.reason
+        });
+        return published;
+      }
+
+      db.upsertCalendarEventFromNostr(published.event, "caldav-bridge");
+
+      db.logSync({
+        direction: "caldav_to_nostr",
+        eventId: published.event.id,
+        action: `updated_kind_${published.event.kind}`
+      });
+
+      return {
+        skipped: false,
+        event: published.event,
+        calEvent: db.getCalendarEventByUid(caldavUid)
       };
     },
 

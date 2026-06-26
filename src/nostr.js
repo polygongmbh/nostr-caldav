@@ -489,7 +489,7 @@ export function createNostrPublisher({ relays, signer, onauth }) {
       await Promise.any(pool.publish(targetRelays, signed, { onauth: activeOnauth }));
       return { skipped: false, event: signed };
     },
-    async publishCalendarEventCreate({ uid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, tagNames, taskRef = null, signer: signerOverride = null, publishRelays = null }) {
+    async publishCalendarEventCreate({ uid, summary, description, location, labels, isAllDay, startDate, endDate, startAt, endAt, startTzid = null, endTzid = null, tagNames, taskRef = null, signer: signerOverride = null, publishRelays = null }) {
       const activeSigner = signerOverride || signer;
       const activeOnauth = activeSigner ? async (eventTemplate) => activeSigner.signEvent(eventTemplate) : onauth || undefined;
       if (!activeSigner?.enabled) {
@@ -508,6 +508,8 @@ export function createNostrPublisher({ relays, signer, onauth }) {
       } else {
         if (startAt != null) tags.push(["start", String(startAt)]);
         if (endAt != null) tags.push(["end", String(endAt)]);
+        if (startTzid) tags.push(["start_tzid", startTzid]);
+        if (endTzid && endTzid !== startTzid) tags.push(["end_tzid", endTzid]);
       }
 
       if (location) tags.push(["location", location]);
